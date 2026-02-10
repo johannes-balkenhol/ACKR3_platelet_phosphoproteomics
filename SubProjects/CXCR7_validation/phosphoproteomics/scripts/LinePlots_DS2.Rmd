@@ -1,0 +1,958 @@
+---
+title: "<center> Line Plots of Chosen Phosphosites <br> (Validation Dataset) <center>"
+author: "<center> by Özge Osmanoglu <center>"
+output: 
+  bookdown::html_document2:
+    code_folding: show
+    df_print: paged
+    theme: yeti
+    highlight: tango
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    number_sections: true
+  pdf_document:
+    fig_caption: yes
+    toc: yes
+date: " _`r Sys.Date()`_ "
+---
+
+```{r setup, include=FALSE}
+library(rmarkdown)
+library(tinytex)
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+<br> <br>
+
+- <span style="color:red">**To see the results clearly, please choose "Hide All Code" under the Code tab on top right corner.**</span>
+
+- **For the static images, please right-click and copy the image and then paste it on your presentation or word document.**
+
+<br> <br>
+This analysis highlights **ACKR3-specific changes** in phosphorylation levels for selected phosphopeptides.
+
+- In the **ACKR3-specific** plots, intensity values represent ***ACKR3 minus DMSO***. A value above 0 in the non-standardized plots means the phosphopeptide is more abundant in ACKR3-stimulated platelets compared to DMSO controls.
+- In **temporal** profile plots, which compare the initial and validation datasets, the intensity values come directly from the ACKR3 condition.
+<br> <br>
+
+## PREPARE DATA
+We begin by preparing the data for analysis. First, we use the meanAbundance function from the PhosR package to calculate the mean abundances of phosphorylation sites across different time points from the norm_intensity_filter dataset, which is organized by groups defined in grps.
+
+````{r Prep Data, echo = TRUE}
+library(PhosR)
+library(plotly)
+
+#initial data----
+## Get mean abundances for each timepoints 
+norm_intensity_filter_initial <-  read.csv("/Users/ozgeosmanoglu/Nextcloud/CXCR7_platelet_analysis/CXCR7_initial/phosphoproteomics/data/processed_data/norm_intensity_filter.txt", sep = "\t")
+grps = c("X0000","X0000","X0000","X0000","X0000","X0000","X0000","X0010","X0010","X0010","X0010","X0010","X0010","X0030","X0030","X0030","X0030","X0030","X0030","X0030","X0060","X0060","X0060","X0060","X0060","X0060","X0060","X0300","X0300","X0300","X0300","X0300","X0300","X0300","X0600","X0600","X0600","X0600","X0600","X0600","X0900","X0900","X0900","X0900","X0900","X0900","X0900","X1800","X1800","X1800","X1800","X1800","X1800")
+ppm_initial <- meanAbundance(norm_intensity_filter_initial, grps)
+
+#validation data----
+
+## Get mean abundances for each timepoints ACKR3 vs. DMSO
+norm_intensity_filter_diff <-  read.csv("/Users/ozgeosmanoglu/Nextcloud/CXCR7_platelet_analysis/CXCR7_validation/phosphoproteomics/data/processed_data/ppe_norm_diff.txt", sep = "\t")
+grps_diff <- gsub("_[0-9][0-9]", "", colnames(norm_intensity_filter_diff))
+ppm_diff <- meanAbundance(norm_intensity_filter_diff, grps_diff)
+
+
+## Get mean abundances for each timepoints ACKR3 vs. 0
+norm_intensity_filter_cxcr7 <- read.csv("/Users/ozgeosmanoglu/Nextcloud/CXCR7_platelet_analysis/CXCR7_validation/phosphoproteomics/data/processed_data/norm_intensity_filter.txt", sep = "\t")
+norm_intensity_filter_cxcr7 <- dplyr::select(norm_intensity_filter_cxcr7, contains("ctrl") | contains("cxcr7"))
+norm_intensity_filter_cxcr7 <- norm_intensity_filter_cxcr7[c(1:10, 11:20, 31:40, 21:30)]
+grps_cxcr7 <-  gsub("_[0-9][0-9]", "", colnames(norm_intensity_filter_cxcr7))
+ppm_cxcr7 <- meanAbundance(norm_intensity_filter_cxcr7, grps_cxcr7)
+
+````
+
+## STANDARDIZE DATA
+
+Next, we standardize the data using z-score normalization. We calculate the mean and standard deviation for each phosphosite (row in the matrix) across all time points. The mean for each phosphosite is subtracted from its respective values, and the resulting differences are then divided by the standard deviation of that phosphosite. This transforms the data, ensuring that each phosphorylation site has a mean of zero and a standard deviation of one, making the data comparable across sites. The resulting matrix, ppm_st, is the standardized version of the original data, ready for further analysis.
+
+
+````{r Standardize Data, echo = TRUE}
+#Initial data (ACKR3 vs. 0s)
+means <- apply(ppm_initial, 1, mean)   # Compute mean for each phosphosite (row)
+stds <- apply(ppm_initial, 1, stats::sd)  # Compute standard deviation for each phosphosite (row)
+
+tmp <- sweep(ppm_initial, 1, means, FUN = "-")  # Subtract mean from each value
+ppm_initial_st <- sweep(tmp, 1, stds, FUN = "/")   # Divide by standard deviation
+
+#Initial data (ACKR3 vs. DMSO)
+means <- apply(ppm_diff, 1, mean)   # Compute mean for each phosphosite (row)
+stds <- apply(ppm_diff, 1, stats::sd)  # Compute standard deviation for each phosphosite (row)
+
+tmp <- sweep(ppm_diff, 1, means, FUN = "-")  # Subtract mean from each value
+ppm_diff_st <- sweep(tmp, 1, stds, FUN = "/")   # Divide by standard deviation
+
+#Initial data (ACKR3 vs. 0s)
+means <- apply(ppm_cxcr7, 1, mean)   # Compute mean for each phosphosite (row)
+stds <- apply(ppm_cxcr7, 1, stats::sd)  # Compute standard deviation for each phosphosite (row)
+
+tmp <- sweep(ppm_cxcr7, 1, means, FUN = "-")  # Subtract mean from each value
+ppm_cxcr7_st <- sweep(tmp, 1, stds, FUN = "/")   # Divide by standard deviation
+
+````
+
+## PREPARE PLOTTING FUNCTIONS
+
+In the next step, we define two functions for plotting phosphosite data.These functions generate both static and interactive plots of phosphosite data, allowing us to visualize both the normalized intensities and the standardized profiles (z-score normalization) across time points, with optional labels and hoverable information for phosphosites.
+
+````{r Step 2 - Plot Functions, echo = TRUE}
+# Custom scaling function for non-uniform x-axis
+custom_scale <- function(breaks) {
+  scaled_positions <- cumsum(c(0, diff(breaks)))
+  return(scaled_positions)
+}
+
+
+plotPhosphositeInteractive <- function(Tc, site_inputs, custom_title = NULL, new.window = FALSE, llwd = 4) {
+  
+  # Helper function to generate the title based on inputs
+  generate_title <- function(site_inputs, custom_title) {
+    if (!is.null(custom_title)) {
+      return(custom_title)
+    } else {
+      proteins <- unique(sapply(strsplit(site_inputs, ","), function(x) x[1]))  # Split by comma to extract protein
+      if (length(proteins) == 1) {
+        return(proteins)
+      } else {
+        return(paste(proteins, collapse = ", "))
+      }
+    }
+  }
+  
+  # Helper function to parse and filter the input with exact matching for protein and site
+  parse_and_filter_data <- function(Tc, site_inputs) {
+    matched_rows <- c()
+    
+    for (site in site_inputs) {
+      protein_site <- strsplit(site, ";")[[1]]
+      protein <- protein_site[1]
+      site_id <- protein_site[2]
+      
+      if (length(protein_site) == 1) {
+        # Ensure exact match for the protein, avoid partial matches (like "MAPK1" matching "MAPK10")
+        rows <- grep(paste0("\\b", protein, "\\b"), rownames(Tc), value = TRUE, ignore.case = TRUE)
+      } else {
+        # Escape the pipe '|' character in site_id
+        site_id_escaped <- gsub("\\|", "\\\\|", site_id)
+        # Use the corrected regular expression
+        rows <-grep(paste0("^([^;]*;)", protein, ";", site_id_escaped, ";"), rownames(Tc), value = TRUE, ignore.case = TRUE)
+        }
+      
+      matched_rows <- c(matched_rows, rows)
+    }
+    
+    selected_data <- Tc[matched_rows, , drop = FALSE]
+    return(selected_data)
+  }
+  
+  # Step 1: Parse and filter the dataframe
+  selected_data <- parse_and_filter_data(Tc, site_inputs)
+  
+  if (nrow(selected_data) == 0) {
+    stop("No matching phosphosite found.")
+  }
+  
+  # Step 2: Define time breaks
+  new_breaks <- c(0, 10, 600, 1800)
+  scaled_breaks <- new_breaks
+  
+  # Step 3: Create color palette
+  color_palette <- colorRampPalette(c("blue", "red"))(nrow(selected_data))
+  
+  # Step 4: Initialize plotly object
+  p <- plot_ly()
+  
+  # Step 5: Add traces for each selected phosphosite
+  for (i in 1:nrow(selected_data)) {
+    phosphosite_info <- strsplit(rownames(selected_data)[i], ";")[[1]]
+    protsite <- paste0(phosphosite_info[2], "-", phosphosite_info[3]) 
+    p <- p %>% add_trace(
+      x = scaled_breaks,
+      y = selected_data[i, ],
+      type = 'scatter',
+      mode = 'lines',
+      line = list(color = color_palette[i], width = llwd),
+      hoverinfo = 'text+y',
+      text = protsite  # Hover info will show phosphosite name
+    )
+  }
+  
+  # Step 6: Add plot title
+  title <- generate_title(site_inputs, custom_title)
+  
+  # Step 7: Layout customizations
+  p <- p %>% layout(
+    title = title,
+    xaxis = list(title = "Time Course", tickvals = scaled_breaks, ticktext = new_breaks),
+    yaxis = list(title = "Intensity Profile"),
+    showlegend = FALSE
+  )
+  
+  # Step 8: Optionally open the plot in a new window
+  if (new.window) {
+    htmlwidgets::onRender(p, "function(el) { window.open(el, '_blank'); }")
+  }
+  
+  return(p)
+}
+
+plotPhosphositeInteractive_initial <- function(Tc, site_inputs, custom_title = NULL, new.window = FALSE, llwd = 2) {
+  
+  # Helper function to generate the title based on inputs
+  generate_title <- function(site_inputs, custom_title) {
+    if (!is.null(custom_title)) {
+      return(custom_title)
+    } else {
+      proteins <- unique(sapply(strsplit(site_inputs, ","), function(x) x[1]))  # Split by comma to extract protein
+      if (length(proteins) == 1) {
+        return(proteins)
+      } else {
+        return(paste(proteins, collapse = ", "))
+      }
+    }
+  }
+  
+  # Helper function to parse and filter the input with exact matching for protein and site
+  parse_and_filter_data <- function(Tc, site_inputs) {
+    matched_rows <- c()
+    
+    for (site in site_inputs) {
+      protein_site <- strsplit(site, ";")[[1]]
+      protein <- protein_site[1]
+      site_id <- protein_site[2]
+      
+      if (length(protein_site) == 1) {
+        # Ensure exact match for the protein, avoid partial matches (like "MAPK1" matching "MAPK10")
+        rows <- grep(paste0("\\b", protein, "\\b"), rownames(Tc), value = TRUE, ignore.case = TRUE)
+      } else {
+        # Escape the pipe '|' character in site_id
+        site_id_escaped <- gsub("\\|", "\\\\|", site_id)
+        # Use the corrected regular expression
+        rows <-grep(paste0("^([^;]*;)", protein, ";", site_id_escaped, ";"), rownames(Tc), value = TRUE, ignore.case = TRUE)
+        }
+      
+      matched_rows <- c(matched_rows, rows)
+    }
+    
+    selected_data <- Tc[matched_rows, , drop = FALSE]
+    return(selected_data)
+  }
+  
+  # Step 1: Parse and filter the dataframe
+  selected_data <- parse_and_filter_data(Tc, site_inputs)
+  
+  if (nrow(selected_data) == 0) {
+    stop("No matching phosphosite found.")
+  }
+  
+  # Step 2: Define time breaks
+  new_breaks <- c(0, 10, 30, 60, 300, 600, 900, 1800)
+  scaled_breaks <- custom_scale(new_breaks)
+  
+  # Create a color gradient (you can adjust the palette as needed)
+  color_palette <- colorRampPalette(c("darkgreen", "gold3"))(nrow(selected_data))
+  
+  # Step 4: Initialize plotly object
+  p <- plot_ly()
+  
+  # Step 5: Add traces for each selected phosphosite
+  for (i in 1:nrow(selected_data)) {
+    phosphosite_info <- strsplit(rownames(selected_data)[i], ";")[[1]]
+    protsite <- paste0(phosphosite_info[2], "-", phosphosite_info[3]) 
+    p <- p %>% add_trace(
+      x = scaled_breaks,
+      y = selected_data[i, ],
+      type = 'scatter',
+      mode = 'lines',
+      line = list(color = color_palette[i], width = llwd),
+      hoverinfo = 'text+y',
+      text = protsite  # Hover info will show phosphosite name
+    )
+  }
+  
+  # Step 6: Add plot title
+  title <- generate_title(site_inputs, custom_title)
+  
+  # Step 7: Layout customizations
+  p <- p %>% layout(
+    title = title,
+    xaxis = list(title = "Time Course", tickvals = scaled_breaks, ticktext = new_breaks),
+    yaxis = list(title = "Intensity Profile"),
+    showlegend = FALSE
+  )
+  
+  # Step 8: Optionally open the plot in a new window
+  if (new.window) {
+    htmlwidgets::onRender(p, "function(el) { window.open(el, '_blank'); }")
+  }
+  
+  return(p)
+}
+
+
+plotPhosphositeStatic <- function(Tc, site_inputs, custom_title = NULL, llwd = 2) {
+  
+  # Helper function to generate the title based on inputs
+  generate_title <- function(site_inputs, custom_title) {
+    if (!is.null(custom_title)) {
+      return(custom_title)
+    } else {
+      proteins <- unique(sapply(strsplit(site_inputs, ","), function(x) x[1]))  # Split by comma to extract protein
+      if (length(proteins) == 1) {
+        return(proteins)
+      } else {
+        return(paste(proteins, collapse = ", "))
+      }
+    }
+  }
+  
+  # Helper function to parse and filter the input with exact matching for protein and site
+  parse_and_filter_data <- function(Tc, site_inputs) {
+    matched_rows <- c()
+    
+    for (site in site_inputs) {
+      protein_site <- strsplit(site, ";")[[1]]
+      protein <- protein_site[1]
+      site_id <- protein_site[2]
+      
+      if (length(protein_site) == 1) {
+        # Ensure exact match for the protein, avoid partial matches (like "MAPK1" matching "MAPK10")
+        rows <- grep(paste0("\\b", protein, "\\b"), rownames(Tc), value = TRUE, ignore.case = TRUE)
+      } else {
+        # Escape the pipe '|' character in site_id
+        site_id_escaped <- gsub("\\|", "\\\\|", site_id)
+        # Use the corrected regular expression
+        rows <-grep(paste0("^([^;]*;)", protein, ";", site_id_escaped, ";"), rownames(Tc), value = TRUE, ignore.case = TRUE)
+         }
+      
+      matched_rows <- c(matched_rows, rows)
+    }
+    
+    selected_data <- Tc[matched_rows, , drop = FALSE]
+    return(selected_data)
+  }
+  
+  # Step 1: Parse and filter the dataframe
+  selected_data <- parse_and_filter_data(Tc, site_inputs)
+  
+  if (nrow(selected_data) == 0) {
+    stop("No matching phosphosite found.")
+  }
+  
+  # Step 2: Define time breaks
+  new_breaks <- c(0, 10, 600, 1800)
+  scaled_breaks <- new_breaks
+  
+  # Step 3: Create color palette
+  color_palette <- colorRampPalette(c("blue", "red"))(nrow(selected_data))
+  
+  # Set plot limits
+  ymin <- min(selected_data)
+  ymax <- max(selected_data)
+  
+  # Create title
+  title <- generate_title(site_inputs, custom_title)
+  
+  # Step 4: Plot setup
+  plot(x = NA, xlim = range(scaled_breaks), xaxt = 'n', ylim = c(ymin, ymax), 
+       xlab = "Time Course", ylab = "Intensity Profile", main = title)
+  
+  # Add x-axis labels
+  axis(1, at = scaled_breaks, labels = new_breaks)
+  
+  # Step 5: Add lines for each phosphosite
+  for (i in 1:nrow(selected_data)) {
+    phosphosite_info <- strsplit(rownames(selected_data)[i], ";")[[1]]
+    protsite <- paste0(phosphosite_info[2], "-", phosphosite_info[3]) 
+    lines(scaled_breaks, selected_data[i, ], col = color_palette[i], lwd = llwd)
+    
+    # Label the last point of each line
+    text(scaled_breaks[length(scaled_breaks)], selected_data[i, length(selected_data[i, ])], 
+         labels = protsite, pos = 2, col = "black")
+  }
+}
+
+plotPhosphositeStatic_initial <- function(Tc, site_inputs, custom_title = NULL, llwd = 2) {
+  
+  # Helper function to generate the title based on inputs
+  generate_title <- function(site_inputs, custom_title) {
+    if (!is.null(custom_title)) {
+      return(custom_title)
+    } else {
+      proteins <- unique(sapply(strsplit(site_inputs, ","), function(x) x[1]))  # Split by comma to extract protein
+      if (length(proteins) == 1) {
+        return(proteins)
+      } else {
+        return(paste(proteins, collapse = ", "))
+      }
+    }
+  }
+  
+  # Helper function to parse and filter the input with exact matching for protein and site
+  parse_and_filter_data <- function(Tc, site_inputs) {
+    matched_rows <- c()
+    
+    for (site in site_inputs) {
+      protein_site <- strsplit(site, ";")[[1]]
+      protein <- protein_site[1]
+      site_id <- protein_site[2]
+      
+      if (length(protein_site) == 1) {
+        # Ensure exact match for the protein, avoid partial matches (like "MAPK1" matching "MAPK10")
+        rows <- grep(paste0("\\b", protein, "\\b"), rownames(Tc), value = TRUE, ignore.case = TRUE)
+      } else {
+        # Ensure exact match for protein and site (like "SRC;S17" matching exactly)
+        # Escape the pipe '|' character in site_id
+        site_id_escaped <- gsub("\\|", "\\\\|", site_id)
+        # Use the corrected regular expression
+        rows <-grep(paste0("^([^;]*;)", protein, ";", site_id_escaped, ";"), rownames(Tc), value = TRUE, ignore.case = TRUE)
+        }
+      
+      matched_rows <- c(matched_rows, rows)
+    }
+    
+    selected_data <- Tc[matched_rows, , drop = FALSE]
+    return(selected_data)
+  }
+  
+  # Step 1: Parse and filter the dataframe
+  selected_data <- parse_and_filter_data(Tc, site_inputs)
+  
+  if (nrow(selected_data) == 0) {
+    stop("No matching phosphosite found.")
+  }
+  
+  # Step 2: Define time breaks
+  # Step 2: Define time breaks
+  new_breaks <- c(0, 10, 30, 60, 300, 600, 900, 1800)
+  scaled_breaks <- custom_scale(new_breaks)
+  
+  # Create a color gradient (you can adjust the palette as needed)
+  color_palette <- colorRampPalette(c("darkgreen", "gold3"))(nrow(selected_data))
+  
+  # Set plot limits
+  ymin <- min(selected_data)
+  ymax <- max(selected_data)
+  
+  # Create title
+  title <- generate_title(site_inputs, custom_title)
+  
+  # Step 4: Plot setup
+  plot(x = NA, xlim = range(scaled_breaks), xaxt = 'n', ylim = c(ymin, ymax), 
+       xlab = "Time Course", ylab = "Intensity Profile", main = title)
+  
+  # Add x-axis labels
+  axis(1, at = scaled_breaks, labels = new_breaks)
+  
+  # Step 5: Add lines for each phosphosite
+  for (i in 1:nrow(selected_data)) {
+    phosphosite_info <- strsplit(rownames(selected_data)[i], ";")[[1]]
+    protsite <- paste0(phosphosite_info[2], "-", phosphosite_info[3]) 
+    lines(scaled_breaks, selected_data[i, ], col = color_palette[i], lwd = llwd)
+    
+    # Label the last point of each line
+    text(scaled_breaks[length(scaled_breaks)], selected_data[i, length(selected_data[i, ])], 
+         labels = protsite, pos = 2, col = "black")
+  }
+}
+
+````
+
+
+## VISUALIZE INTERESTING CANDIDATES
+
+### DAPP1
+We will begin by looking at the intensities of DAPP1 over time.
+
+The plot shows the intensities for each phosphosite associated with DAPP1. These intensities have been **standardized** into **z-scores**, so we can easily compare the data across different sites. 
+
+**Please hover on the interactive graph to see which one is interesting.**
+
+````{r DAPP1, echo = TRUE, fig.width=8, fig.height=5, fig.cap="ACKR3-specific interactive lineplot of all DAPP1 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **standardized**.", fig.align="center"}
+
+plotPhosphositeInteractive(ppm_diff_st, "DAPP1",)
+````
+
+<br> <br>
+
+In addition to the standardized data, we can also view the normalized intensities **(non-standardized)**. This gives us a sense of the overall abundance of each phosphosite for DAPP1. By looking at these intensities, we can identify which specific sites tend to have higher or lower levels of abundance across all time points.
+
+````{r DAPP12, echo = TRUE,  fig.width=8, fig.height=5, fig.cap="ACKR3-specific interactive lineplot of all DAPP1 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **not standardized**, rather reflect normalized intensity values directly.", fig.align="center"}
+plotPhosphositeInteractive(ppm_diff, "DAPP1")
+````
+<br> <br> <br>
+
+#### DAPP1 details 
+
+Now we can get into details of individual phosphopeptides. Let's first see if DAPP-S276, which is the ***commonly found site in initial and validation dataset***, shows similar intensity profile over time **(ACKR3 vs. 0s)** to the intensity profile in initial dataset.
+
+````{r DAPP1-S276, fig.keep='all', fig.width=6, fig.height=3, echo = TRUE, fig.cap="Temporal lineplot of DAPP1-S276 phosphorylation in initial (**left:green**) and validation (**right:blue**) datasets (**standardized**)", fig.align="center"}
+
+par(mfrow=c(1,2))
+plotPhosphositeStatic_initial(ppm_initial_st, "DAPP1;S276") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "DAPP1;S276") # standardized
+
+````
+<br>
+
+DAPP1-Y139 (***suggestion from Mita***) is present in the validation dataset and it is downregulated at 10 seconds but is upregulated at 600s and 1800s. Furthermore we observe downregulation of DAPP-S276 at all time points between its phosphorylation in ACKR3 stimulated samples compared to DMSO. 
+
+````{r DAPP1-both, fig.keep='all', fig.width=6, fig.height=3, fig.cap="ACKR3-specific lineplot of DAPP1-Y139 and DAPP1-S276 phosphorylation (**non-standardized**)", fig.align="center"}
+par(mfrow=c(1,2))
+
+{ plotPhosphositeStatic(ppm_diff, "DAPP1;Y139")
+  abline(h = 0, col = "gray", lty = 2)  
+  plotPhosphositeStatic(ppm_diff, "DAPP1;S276")
+  abline(h = 0, col = "gray", lty = 2)
+  }
+
+````
+
+<br> <br> <br> <br>
+
+### PTPN6
+**Please hover on the interactive graph to see which one is interesting.**
+
+````{r PTPN6, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all PTPN6 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **standardized**.", fig.align="center"}
+plotPhosphositeInteractive(ppm_diff_st, "PTPN6")
+
+````
+
+````{r PTPN62, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all PTPN6 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **not standardized**, rather reflect normalized intensity values directly.", fig.align="center"}
+plotPhosphositeInteractive(ppm_diff, "PTPN6")
+````
+<br> <br> <br>
+
+#### PTPN6 details 
+Let's first see if PTPN6-Y536, which is the ***commonly found site in initial and validation dataset***, shows similar intensity profile over time **(ACKR3 vs. 0s)** to the intensity profile in initial dataset.
+
+````{r PTPN6-Y536, fig.keep='all', fig.width=6, fig.height=3, echo = TRUE, fig.cap="Temporal lineplot of PTPN6-Y536 phosphorylation in initial (**left:green**) and validation (**right:blue**) datasets (**standardized**)", fig.align="center"}
+
+par(mfrow=c(1,2)) 
+plotPhosphositeStatic_initial(ppm_initial_st, "PTPN6;Y536") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "PTPN6;Y536") # standardized
+
+````
+<br> <br>
+
+Both PTPN6-Y536 and Y564 (***suggestion from Mita***) are present in the validation dataset. We see an ACKR3-specific upregulation of the PTPN6-Y536 at 600 seconds which is sustained at 1800s to an extent. Furthermore, PTPN6-Y564 is upregulated at 1800s.
+
+````{r PTPN6-both, fig.keep='all', fig.width=6, fig.height=3, fig.cap="ACKR3-specific lineplot of PTPN6-Y536 and PTPN6-Y564 phosphorylation (**non-standardized**)", fig.align="center"}
+par(mfrow=c(1,2)) 
+{
+  plotPhosphositeStatic(ppm_diff, "PTPN6;Y536")
+  abline(h = 0, col = "gray", lty = 2)
+  plotPhosphositeStatic(ppm_diff, "PTPN6;Y564")
+  abline(h = 0, col = "gray", lty = 2)
+}
+
+````
+
+<br> <br> <br> <br>
+
+### BIN2
+**Please hover on the interactive graph to see which one is interesting.**
+
+````{r BIN2, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all BIN2 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **standardized**.", fig.align="center"}
+
+plotPhosphositeInteractive(ppm_diff_st, "BIN2")
+
+````
+
+````{r BIN22, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all BIN2 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **not standardized**, rather reflect normalized intensity values directly.", fig.align="center"}
+plotPhosphositeInteractive(ppm_diff, "BIN2;")
+````
+<br> <br> <br>
+
+#### BIN2 details 
+There are many BIN2 sites in the dataset. ***19 of the sites are also found in the initial dataset***. To make plotting easier, we only continue with the  sites that showed continuous increase in initial dataset. Let's see if they are similar in the validation <span style="color:red">(ACKR3 vs. 0s).</span>
+
+
+````{r BIN2commons, fig.keep='all', fig.width=12, fig.height=12, echo = TRUE, fig.cap="Temporal lineplot of BIN2 phosphorylation in initial (**left:green**) and validation (**right:blue**) datasets (**standardized**)", fig.align="center"}
+
+par(mfrow=c(4,4)) 
+plotPhosphositeStatic_initial(ppm_initial_st, "BIN2;T497") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "BIN2;T497") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "BIN2;S498") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "BIN2;S498") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "BIN2;S280|S285") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "BIN2;S280|S285") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "BIN2;S375") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "BIN2;S375") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "BIN2;S466") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "BIN2;S466") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "BIN2;T478") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "BIN2;T478") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "BIN2;S435|S436|S444") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "BIN2;S435|S436|S444") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "BIN2;S458") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "BIN2;S458") # standardized
+
+````
+<br>
+All show increased phosphorylation towards late timepoints, ***so the results in the initial experiments are confirmed here***. Next, let's look at BIN2 sites that showed increased <span style="color:red">ACKR3-specific</span> phosphorylation at 1800s.
+
+````{r BIN2ACKR3, fig.keep='all', fig.width=6, fig.height=6, echo = TRUE, fig.cap="ACKR3-specific lineplot of BIN2 phosphorylation (**non-standardized**)", fig.align="center"}
+par(mfrow = c(2, 2))  
+
+{ 
+  plotPhosphositeStatic(ppm_diff, "BIN2;S375")  
+  abline(h = 0, col = "gray", lty = 2)  
+
+  plotPhosphositeStatic(ppm_diff, "BIN2;S280|S285")  
+  abline(h = 0, col = "gray", lty = 2)  
+
+  plotPhosphositeStatic(ppm_diff, "BIN2;S282|S285")  
+  abline(h = 0, col = "gray", lty = 2)  
+
+  plotPhosphositeStatic(ppm_diff, "BIN2;T497")  
+  abline(h = 0, col = "gray", lty = 2)  
+}
+
+````
+<br> <br> <br> <br>
+
+### STIM1
+**Please hover on the interactive graph to see which one is interesting.**
+````{r STIM1, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all STIM1 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **standardized**.", fig.align="center"}
+
+plotPhosphositeInteractive(ppm_diff_st, "STIM1")
+
+````
+
+````{r STIM12, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all STIM1 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **not standardized**, rather reflect normalized intensity values directly.", fig.align="center"}
+plotPhosphositeInteractive(ppm_diff, "STIM1")
+````
+<br> <br> <br>
+
+#### STIM1 details 
+There are many STIM1 sites in both datasets. However, all 10 phosphopeptides in the validation dataset are also found in the initial. So let's compare first their temporal profiles between the two datasets.
+
+
+````{r STIM1commons, fig.keep='all', fig.width=12, fig.height=15, echo = TRUE, fig.cap="Temporal lineplot of STIM1 phosphorylation in initial (**left:green**) and validation (**right:blue**) datasets (**standardized**)", fig.align="center"}
+
+par(mfrow=c(5,4)) 
+plotPhosphositeStatic_initial(ppm_initial_st, "STIM1;S618|S621") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "STIM1;S618|S621") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "STIM1;S621") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "STIM1;S621") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "STIM1;S519|S521") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "STIM1;S519|S521") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "STIM1;S575") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "STIM1;S575") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "STIM1;S512") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "STIM1;S512") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "STIM1;S257") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "STIM1;S257") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "STIM1;S608") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "STIM1;S608") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "STIM1;T517|S524") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "STIM1;T517|S524") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "STIM1;S519") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "STIM1;S519") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "STIM1;S660") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "STIM1;S660") # standardized
+
+````
+<br>
+As an example, below sites like STIM1-S512, STIM1-S575, STIM1-S660 are plotted, which show increase towards late timepoints.
+
+````{r STIM1ACKR3, echo = TRUE, fig.width=9, fig.height=3, fig.cap="ACKR3-specific lineplot of STIM1 phosphorylation (**non-standardized**)", fig.align="center"}
+
+par(mfrow=c(1,3))
+
+{plotPhosphositeStatic(ppm_diff, "STIM1;S512") # standardized
+abline(h = 0, col = "gray", lty = 2)  
+plotPhosphositeStatic(ppm_diff, "STIM1;S575") # standardized
+abline(h = 0, col = "gray", lty = 2)  
+plotPhosphositeStatic(ppm_diff, "STIM1;S660") # standardized
+abline(h = 0, col = "gray", lty = 2)
+}
+
+
+````
+
+<br> <br> <br> <br>
+
+### SRC
+**Please hover on the interactive graph to see which one is interesting.**
+````{r SRC, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all SRC phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **standardized**.", fig.align="center"}
+
+plotPhosphositeInteractive(ppm_diff_st, "SRC")
+
+````
+
+````{r SRC2, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all SRC phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **not standardized**, rather reflect normalized intensity values directly.", fig.align="center"}
+plotPhosphositeInteractive(ppm_diff, "SRC")
+````
+<br> <br> <br>
+
+#### SRC details 
+There are 2 sites in both datasets: SRC-S17 and SRC-S75. So let's compare first their temporal profiles between the two datasets.
+
+
+````{r SRCcommons, fig.keep='all', fig.width=6, fig.height=6, echo = TRUE, fig.cap="Temporal lineplot of SRC phosphorylation in initial (**left:green**) and validation (**right:blue**) datasets (**standardized**)", fig.align="center"}
+
+par(mfrow=c(2,2)) 
+plotPhosphositeStatic_initial(ppm_initial_st, "SRC;S17") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "SRC;S17") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "SRC;S75") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "SRC;S75") # standardized
+
+
+````
+<br>
+The same sites are also the only ACKR3-specific upregulated sites (Figure \@ref(fig:SRC2)), so let's plot them.
+
+````{r SRCACKR3, echo = TRUE, fig.width=6, fig.height=3, fig.cap="ACKR3-specific lineplot of SRC phosphorylation (**non-standardized**)", fig.align="center"}
+
+par(mfrow=c(1,2))
+
+{plotPhosphositeStatic(ppm_diff, "SRC;S17") # standardized
+abline(h = 0, col = "gray", lty = 2)  
+plotPhosphositeStatic(ppm_diff, "SRC;S75") # standardized
+abline(h = 0, col = "gray", lty = 2)  
+}
+
+
+````
+
+### MAPKs
+**Please hover on the interactive graph to see which one is interesting.**
+
+There are three MAP kinases in the validation data; MAPKAP1, MAPK14, and MAPKAPK2. So let's just plot them all. All are present in the validation data. So let's just plot them all.
+
+Let's compare first their temporal profiles between the two datasets.
+
+````{r MAPKcommons, fig.keep='all', fig.width=12, fig.height=6, echo = TRUE, fig.cap="Temporal lineplot of MAPK phosphorylation in initial (**left:green**) and validation (**right:blue**) datasets (**standardized**)", fig.align="center"}
+
+par(mfrow=c(2,4)) 
+plotPhosphositeStatic_initial(ppm_initial_st, "MAPK14;T180") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "MAPK14;T180") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "MAPK14;T180|Y182") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "MAPK14;T180|Y182") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "MAPKAP1;S510") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "MAPKAP1;S510") # standardized
+plotPhosphositeStatic_initial(ppm_initial_st, "MAPKAPK2;T222") # standardized
+plotPhosphositeStatic(ppm_cxcr7_st, "MAPKAPK2;T222") # standardized
+
+
+````
+<br>
+Let's now plot their ACKR3-specific phosphorylation changes.
+
+````{r MAPKACKR3, echo = TRUE, fig.width=6, fig.height=6, fig.cap="ACKR3-specific lineplot of MAPK phosphorylation (**non-standardized**)", fig.align="center"}
+
+par(mfrow=c(2,2))
+
+{plotPhosphositeStatic(ppm_diff, "MAPK14;T180") # standardized
+abline(h = 0, col = "gray", lty = 2)  
+plotPhosphositeStatic(ppm_diff, "MAPK14;T180|Y182") # standardized
+abline(h = 0, col = "gray", lty = 2)  
+plotPhosphositeStatic(ppm_diff,  "MAPKAP1;S510") # standardized
+abline(h = 0, col = "gray", lty = 2)  
+plotPhosphositeStatic(ppm_diff, "MAPKAPK2;T222") # standardized
+abline(h = 0, col = "gray", lty = 2)  
+}
+
+
+````
+
+<br> <br> <br> <br>
+
+## Kinase Targets
+
+***In our data, there are no known targets for the kinases: PI3K and PTK6.***
+
+### SRC targets
+
+````{r SRCtargets, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all SRC phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+plotPhosphositeInteractive(ppm_diff_st, c("PTPN6;Y536", "PTPN6;Y564", "SHC1;Y427", "STAT3;Y705", "STAT5A;Y694", "DOK1;Y362", "DAPP1;Y139"), "SRC targets")
+
+````
+
+
+<br> <br> <br> <br>
+
+### AKT1 targets
+
+````{r AKT1targets, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all AKT1 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+plotPhosphositeInteractive(ppm_diff, c("HSPB1;S82", "PKM;S37", "SLC9A1;S703", "SLC9A1;S796", "FLNA;S2152", "USP8;S718", "MTOR;S2448", "TSC2;T1462", "GSK3B;S9", "PPP1CA;T320", "PEA15;S116", "CCDC88A;S1417", "RICTOR;T1135", "TBC1D1;T596", "BAD;S99", "RANBP3;S126", "FAF1;S582", "PIKFYVE;S307"), "AKT1 targets")
+
+````
+
+<br> <br> <br>
+
+### AKT2 targets
+
+````{r AKT2targets, fig.width=8, fig.height=5, echo = FALSE, fig.cap="ACKR3-specific static lineplot of all AKT2 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+plotPhosphositeStatic(ppm_diff,"WIPF1;T398", "AKT2 targets")
+abline(h = 0, col = "gray", lty = 2)  
+
+````
+
+<br> <br> <br> <br>
+
+### MAPK1 targets
+
+````{r MAPK1targets, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all MAPK1 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+plotPhosphositeInteractive(ppm_diff, c("DNM1L;S616", "PGK1;S203", "RRAS;S201", "PKM;S37", "SLC9A1;S785", "PRDX6;T177", "PTPN7;T66", "STAT5A;S780", "MAPKAPK2;T222", "ARRB1;S412", "ADAM17;T735", "PTPN12;S571", "CALD1;S789", "SOS1;S1178", "EIF4EBP1;T46", "STIM1;S575", "STIM1;S608", "STIM1;S621", "MTMR2;S58", "PCBP2;S189", "ABI1;S183", "EXOC7;S250"), "MAPK1 targets")
+
+````
+
+<br> <br> <br> <br>
+
+### MAPK3 targets
+
+````{r MAPK3targets, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all MAPK3 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+plotPhosphositeInteractive(ppm_diff, c("DNM1L;S616", "RRAS;S201", "PKM;S37", "STMN1;S25", "STMN1;S38", "CANX;S583", "STAT1;S727", "STAT5A;S780", "ARRB1;S412", "ADAM17;T735", "PTPN12;S571", "CALD1;S759", "CALD1;S789", "MTMR2;S58", "PCBP2;S189", "ABI1;S183", "MKNK1;T385", "EXOC7;S250"), "MAPK3 targets")
+
+````
+
+<br> <br> <br> <br>
+
+### PRKACA targets
+
+````{r PRKACAtargets, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all PRKACA phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+plotPhosphositeInteractive(ppm_diff, c("NFATC1;S245", "RAF1;S259", "HSPB1;S82", "VIM;S72", "SRC;S17", "GP1BB;S191", "PRKACA;T198", "FLNA;S2152", "TBXA2R;S331", "CAD;S1859", "PRKAR2B;S114", "PTPN7;S44", "NF2;S518", "ADD1;S436", "GSK3B;S9", "EMD;S49", "VASP;S239", "CDK16;S153", "PTPN12;S435", "PDE3A;S312", "PDE3A;S428", "PPP2R5D;S573", "LASP1;S146", "ARHGEF6;S684", "RASGRP2;S587", "BAD;S99", "DNAJC5;S10"), "PRKACA targets")
+
+````
+
+<br> <br> <br> <br>
+
+### PRKG1 targets
+
+````{r PRKG1targets, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all PRKG1 phosphopeptides. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+plotPhosphositeInteractive(ppm_diff, c("HSPB1;S15", "HSPB1;S82", "TBXA2R;S331", "VASP;S239", "LASP1;S146", "ARHGEF6;S684"), "PRKG1 targets")
+
+````
+
+<br> <br> <br> <br>
+
+
+## Pathways
+
+### PTK6 pathway
+
+We found that the Reactome pathway "Signaling by PTK6" was downregulated exclusively to ACKR3 at 10 seconds. This pathways consists of the proteins CBL, AKT1, STAT3, DOCK1, ELMO1, ARAP1, DOK1, ARHGAP35. Let's look at the phosphopeptides of these proteins first.
+
+````{r PTK6, fig.width=12, fig.height=6, echo = TRUE, fig.cap="ACKR3-specific lineplot of all PTK6 pathways members. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+par(mfrow=c(2,4))
+
+{plotPhosphositeStatic(ppm_diff, "CBL")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "AKT1")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "STAT3")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "DOCK1")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "ELMO1")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "ARAP1")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "DOK1")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "ARHGAP35")
+abline(h = 0, col = "gray", lty = 2)
+}
+
+
+````
+<br> <br>
+We can see that STAT3-Y705, AKT1-S129 are the major downregulated phosphopeptides in this pathway. Although not statistically significant, we see a ACKR3-specific slightly decreased phosphorylation of DOK1-S310, DOK1-Y362, ARAP1-T97, and AKT1-S124 (log2FC < -0.3).
+<br> <br> <br>
+```{r pressure, echo=FALSE, fig.cap="Summary of all phosphopeptides in PTK2 pathway, log2FC values and adjusted p-values are given for ACKR3 vs. DMSO comparison", out.width = '100%'}
+knitr::include_graphics("/Users/ozgeosmanoglu/Desktop/PTK2pathway.png")
+```
+
+
+### cGMP effects pathway
+
+We found that the Reactome pathway "cGMP effects" was upregulated exclusively to ACKR3 at 1800 seconds. This pathways consists of the proteins PDE5A, PRKG2, PRKG1, ITPR1, IRAG1. 
+
+Let's look at the phosphopeptides of these proteins all together in an interactive plot first.
+
+<br> <br> <br>
+
+
+````{r cGMP, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all cGMP effects pathways members. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+
+plotPhosphositeInteractive(ppm_diff, c("PDE5A", "PRKG2", "PRKG1", "ITPR1", "IRAG1"), "cGMP effects")
+
+````
+
+<br> <br> <br>
+
+Now we can look separately, too.
+
+<br> <br> <br>
+
+````{r cGMP2, fig.width=9, fig.height=6, echo = TRUE, fig.cap="ACKR3-specific lineplot of all cGMP effects pathways members. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+par(mfrow=c(2,3))
+
+{plotPhosphositeStatic(ppm_diff, "PDE5A")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "PRKG2")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "PRKG1")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "ITPR1")
+abline(h = 0, col = "gray", lty = 2)
+plotPhosphositeStatic(ppm_diff, "IRAG1")
+abline(h = 0, col = "gray", lty = 2)
+
+}
+
+
+````
+
+<br> <br> <br>
+
+
+IRAG1 has many sites, let's plot it interactively.
+
+<br> <br> <br>
+
+````{r cGMPIRAG1, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific lineplot of all cGMP effects pathways members. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+
+plotPhosphositeInteractive(ppm_diff, "IRAG1")
+
+````
+
+### Negative regulation of the PI3K AKT network
+
+We found that the Reactome pathway "Negative regulation of the PI3K AKT network" was upregulated exclusively to ACKR3 at 1800 seconds. This pathways consists of the proteins PPIK3R2, STRN, FYN, MET, SRC, AKT1, AKT2, IRS1, GRB2, PTPN11, GAB1, PPP2R5D, IRS2.
+
+Let's look at the phosphopeptides of these proteins all together in an interactive plot first.
+
+<br> <br> <br>
+
+
+````{r PI3KAKT, fig.width=8, fig.height=5, echo = TRUE, fig.cap="ACKR3-specific interactive lineplot of all Negative regulation of the PI3K AKT network members. The intensity differences between ACKR3 and DMSO are shown in the lineplots. The values are **non-standardized**.", fig.align="center"}
+
+
+plotPhosphositeInteractive(ppm_diff, c("PIK3R2", "STRN", "FYN", "MET", "SRC", "AKT1", "AKT2", "IRS1", "GRB2", "PTPN11", "GAB1", "PPP2R5D", "IRS2"), "Negative regulation of the PI3K AKT network")
+
+````
+
+<br> <br> <br>
+
+

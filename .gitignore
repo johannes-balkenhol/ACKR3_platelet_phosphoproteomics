@@ -1,0 +1,31 @@
+# Ignore everything
+*
+
+# Allow directory traversal
+!*/
+
+# Only allow actual script files
+!**/*.R
+!**/*.r
+!**/*.py
+!**/*.ipynb
+!**/*.sh
+!**/*.pl
+!**/*.sql
+!**/*.Rmd
+
+# Allow repo essentials
+!.gitignore
+!README.md
+!Readme.md
+
+# Always ignore these even if matched above
+.RData
+.Rhistory
+.DS_Store
+.Rproj.user/
+.git/
+**/.git/**
+**/.Rproj.user/**
+**/omnipathr-log/
+**/.ipynb_checkpoints/

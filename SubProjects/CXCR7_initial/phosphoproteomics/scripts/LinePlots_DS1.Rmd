@@ -1,0 +1,311 @@
+---
+title: "<center> Line Plots of Chosen Phosphosites (Initial Dataset) <center>"
+author: "<center> Özge Osmanoglu <center>"
+output: 
+  html_document:
+    code_folding: show
+    df_print: paged
+    theme: yeti
+    highlight: tango
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    number_sections: true
+  pdf_document:
+    fig_caption: yes
+    toc: yes
+date: " _`r Sys.Date()`_ "
+---
+
+```{r setup, include=FALSE}
+library(rmarkdown)
+library(tinytex)
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+<span style="color:red">**To see the results clearly, please choose "Hide All Code" under the Code tab on top right corner.**</span>
+
+## PREPARE DATA
+We begin by preparing the data for analysis. First, we use the meanAbundance function from the PhosR package to calculate the mean abundances of phosphorylation sites across different time points from the norm_intensity_filter dataset, which is organized by groups defined in grps.
+
+````{r Prep Data, echo = TRUE}
+library(PhosR)
+library(plotly)
+
+# Get mean abundances for each timepoints 
+norm_intensity_filter_initial <-  read.csv("/Users/ozgeosmanoglu/Nextcloud/CXCR7_platelet_analysis/CXCR7_initial/phosphoproteomics/data/processed_data/norm_intensity_filter.txt", sep = "\t")
+grps = c("X0000","X0000","X0000","X0000","X0000","X0000","X0000","X0010","X0010","X0010","X0010","X0010","X0010","X0030","X0030","X0030","X0030","X0030","X0030","X0030","X0060","X0060","X0060","X0060","X0060","X0060","X0060","X0300","X0300","X0300","X0300","X0300","X0300","X0300","X0600","X0600","X0600","X0600","X0600","X0600","X0900","X0900","X0900","X0900","X0900","X0900","X0900","X1800","X1800","X1800","X1800","X1800","X1800")
+ppm_initial <- meanAbundance(norm_intensity_filter_initial, grps)
+````
+
+## STANDARDIZE DATA
+
+Next, we standardize the data using z-score normalization. We calculate the mean and standard deviation for each phosphosite (row in the matrix) across all time points. The mean for each phosphosite is subtracted from its respective values, and the resulting differences are then divided by the standard deviation of that phosphosite. This transforms the data, ensuring that each phosphorylation site has a mean of zero and a standard deviation of one, making the data comparable across sites. The resulting matrix, ppm_st, is the standardized version of the original data, ready for further analysis.
+
+
+````{r Standardize Data, echo = TRUE}
+means <- apply(ppm_initial, 1, mean)   # Compute mean for each phosphosite (row)
+stds <- apply(ppm_initial, 1, stats::sd)  # Compute standard deviation for each phosphosite (row)
+
+tmp <- sweep(ppm_initial, 1, means, FUN = "-")  # Subtract mean from each value
+ppm_initial_st <- sweep(tmp, 1, stds, FUN = "/")   # Divide by standard deviation
+
+````
+
+## PREPARE PLOTTING FUNCTIONS
+
+In the next step, we define two functions for plotting phosphosite data.These functions generate both static and interactive plots of phosphosite data, allowing us to visualize both the normalized intensities and the standardized profiles (z-score normalization) across time points, with optional labels and hoverable information for phosphosites.
+
+````{r Step 2 - Plot Functions, echo = TRUE}
+# Custom scaling function for non-uniform x-axis
+custom_scale <- function(breaks) {
+  scaled_positions <- cumsum(c(0, diff(breaks)))
+  return(scaled_positions)
+}
+
+# The first function, plotPhosphosite, generates a static plot using base R graphics.
+plotPhosphosite_initial <- function(Tc, site_name, specific_site = NULL, new.window = FALSE, llwd = 2) {
+  # Find rows that match the specified phosphoprotein name
+  matched_rows <- grep(site_name, rownames(Tc), value = TRUE)
+  
+  if (length(matched_rows) == 0) {
+    stop("No matching phosphosite found.")
+  }
+  
+  # Extract phosphosite identifiers (3rd field in rownames, split by ";")
+  phosphosites <- sapply(strsplit(matched_rows, ";"), function(x) x[3])
+  
+  # If a specific site is provided, filter the dataset
+  if (!is.null(specific_site)) {
+    site_index <- which(phosphosites == specific_site)
+    if (length(site_index) == 0) {
+      stop(paste("Phosphosite", specific_site, "not found for", site_name))
+    }
+    matched_rows <- matched_rows[site_index]
+    phosphosites <- phosphosites[site_index]
+  }
+  
+  # Extract relevant data
+  selected_data <- Tc[matched_rows, , drop = FALSE]
+  
+  # Define time points
+  new_breaks <- c(0, 10, 30, 60, 300, 600, 900, 1800)
+  scaled_breaks <- custom_scale(new_breaks) # Custom scaling
+  
+  # Create a color gradient (you can adjust the palette as needed)
+  color_palette <- colorRampPalette(c("blue", "red"))(nrow(selected_data))
+  
+  # Open new window if requested
+  if (new.window) grDevices::dev.new()
+  
+  # Set plot limits
+  ymin <- min(selected_data)
+  ymax <- max(selected_data)
+  
+  # Plot setup
+  plot(x = NA, xlim = range(scaled_breaks), xaxt = 'n',
+       ylim = c(ymin, ymax), xlab = "Time Course", ylab = "Intensity Profile", 
+       main = ifelse(is.null(specific_site), 
+                     paste("Phosphosites for", site_name), 
+                     paste("Phosphosite", site_name, "-", specific_site)))
+  
+  # Add x-axis labels
+  axis(1, at = scaled_breaks, labels = new_breaks)
+  
+  # Plot each phosphosite with gradient color
+  for (i in 1:nrow(selected_data)) {
+    lines(scaled_breaks, selected_data[i, ], col = color_palette[i], lwd = llwd)
+    
+    # Only label the line if multiple sites are plotted
+    if (is.null(specific_site)) {
+      text(scaled_breaks[length(scaled_breaks)], selected_data[i, length(selected_data[i, ])], 
+           labels = phosphosites[i], pos = 2, col = "red") # Label last point
+    }
+  }
+}
+
+# The second function, plotPhosphositeInteractive, creates an interactive plot using plotly.
+plotPhosphositeInteractive_initial <- function(Tc, site_name, specific_site = NULL, new.window = FALSE, llwd = 2) {
+  # Find rows that match the specified phosphoprotein name
+  matched_rows <- grep(site_name, rownames(Tc), value = TRUE)
+  
+  if (length(matched_rows) == 0) {
+    stop("No matching phosphosite found.")
+  }
+  
+  # Extract phosphosite identifiers (3rd field in rownames, split by ";")
+  phosphosites <- sapply(strsplit(matched_rows, ";"), function(x) x[3])
+  
+  # If a specific site is provided, filter the dataset
+  if (!is.null(specific_site)) {
+    site_index <- which(phosphosites == specific_site)
+    if (length(site_index) == 0) {
+      stop(paste("Phosphosite", specific_site, "not found for", site_name))
+    }
+    matched_rows <- matched_rows[site_index]
+    phosphosites <- phosphosites[site_index]
+  }
+  
+  # Extract relevant data
+  selected_data <- Tc[matched_rows, , drop = FALSE]
+  
+  # Define time points and custom scaling
+  new_breaks <- c(0, 10, 30, 60, 300, 600, 900, 1800)
+  scaled_breaks <- custom_scale(new_breaks) # Custom scaling
+  
+  # Create a color gradient (you can adjust the palette as needed)
+  color_palette <- colorRampPalette(c("blue", "red"))(nrow(selected_data))
+  
+  # Create an empty plotly object
+  p <- plot_ly()
+  
+  # Prepare data for plotly (interactive plot)
+  for (i in 1:nrow(selected_data)) {
+    p <- p %>% add_trace(
+      x = scaled_breaks,
+      y = selected_data[i, ],
+      type = 'scatter',
+      mode = 'lines',  # Just lines, no text on the plot
+      line = list(color = color_palette[i], width = llwd),
+      hoverinfo = 'text+y',  # Show the phosphosite name and y-value on hover
+      text = phosphosites[i]  # Show this when hovering over the line
+    )
+  }
+  
+  # Customize layout
+  p <- p %>% layout(
+    title = ifelse(is.null(specific_site), 
+                   paste("Phosphosites for", site_name), 
+                   paste("Phosphosite", site_name, "-", specific_site)),
+    xaxis = list(title = "Time Course", tickvals = scaled_breaks, ticktext = new_breaks),
+    yaxis = list(title = "Intensity Profile"),
+    showlegend = FALSE  # Don't show legend
+  )
+  
+  return(p)
+}
+
+````
+
+
+## VISUALIZE INTERESTING CANDIDATES
+
+### DAPP1
+We will begin by looking at the intensities of DAPP1 over time. In the interactive plot, you can hover over the lines to see which specific phosphosites are included in the data.
+
+The plot shows the intensities for each phosphosite associated with DAPP1. These intensities have been **standardized** into **z-scores**, so we can easily compare the data across different sites. 
+
+````{r DAPP1 - Plot Specific Proteins and Phosphopeptides, echo = TRUE}
+
+plotPhosphositeInteractive_initial(ppm_initial_st, "DAPP1")
+````
+
+In addition to the standardized data, we can also view the normalized intensities **(non-standardized)**. This gives us a sense of the overall abundance of each phosphosite for DAPP1. By looking at these intensities, we can identify which specific sites tend to have higher or lower levels of abundance across all time points.
+
+````{r DAPP1 - non-standardized }
+plotPhosphositeInteractive_initial(ppm_initial, "DAPP1")
+````
+
+DAPP1-Y139 is absent from the initial dataset, but we do observe an increase in DAPP1-T271 after 900 seconds. To explore this further, we can plot DAPP1-T271 specifically, where we can see its intensities presented in z-scores **(standardized)**, which helps us better understand the changes in intensity over time.
+
+````{r DAPP1 standardized, echo = TRUE}
+
+plotPhosphosite_initial(ppm_initial_st, "DAPP1", "T271") # standardized
+
+````
+**Please right-click and copy the image and then paste it on your presentation or word document.**
+
+
+### PTPN6
+Let's continue with PTPN6. Following are the **standardized** profiles.
+
+````{r PTPN6, echo = TRUE}
+
+plotPhosphositeInteractive_initial(ppm_initial_st, "PTPN6")
+
+````
+
+We can see the normalized intensities (non-standardized).
+
+````{r PTPN6 - non-standardized }
+plotPhosphositeInteractive_initial(ppm_initial, "PTPN6")
+````
+
+PTPN6-Y536 is present but Y564 is not present in the initial dataset. We see an increase in the PTPN6-Y536 after 900 seconds. We can make the plot of PTPN6-Y536 directly, where we see the intensities in z-scores **(standardized)**.
+
+````{r PTPN6 standardized, echo = TRUE}
+
+plotPhosphosite_initial(ppm_initial_st, "PTPN6", "Y536") # standardized
+
+````
+**Please right-click and copy the image and then paste it on your presentation or word document.**
+
+
+### BIN2
+Let's continue with BIN2. Following are the **standardized** profiles.
+
+````{r BIN2, echo = TRUE}
+
+plotPhosphositeInteractive_initial(ppm_initial_st, "BIN2")
+
+````
+
+We can see the normalized intensities **(non-standardized)**. 
+
+````{r BIN2 - non-standardized }
+plotPhosphositeInteractive_initial(ppm_initial, "BIN2")
+````
+
+There are many BIN2 sites in the dataset. **Please hover on the interactive graph to see which one is interesting.**
+
+As an example, below sites are plotted, both show continous increase and are found both in initial and validation dataset. The intensities in the following plots are shown as in z-scores **(standardized)**.
+
+````{r BIN2 standardized, fig.keep='all', fig.width=5, fig.height=10, echo = TRUE}
+
+par(mfrow=c(4,2)) 
+plotPhosphosite_initial(ppm_initial_st, "BIN2", "T497") # standardized
+plotPhosphosite_initial(ppm_initial_st, "BIN2", "S498") # standardized
+plotPhosphosite_initial(ppm_initial_st, "BIN2", "S280|S285") # standardized
+plotPhosphosite_initial(ppm_initial_st, "BIN2", "S375") # standardized
+plotPhosphosite_initial(ppm_initial_st, "BIN2", "S466") # standardized
+plotPhosphosite_initial(ppm_initial_st, "BIN2", "T478") # standardized
+plotPhosphosite_initial(ppm_initial_st, "BIN2", "S435|S436|S444") # standardized
+plotPhosphosite_initial(ppm_initial_st, "BIN2", "S458") # standardized
+
+
+````
+
+**Please right-click and copy the image and then paste it on your presentation or word document.**
+
+
+### STIM1
+Let's continue with STIM1. Following are the **standardized** profiles.
+
+````{r STIM1, echo = TRUE}
+
+plotPhosphositeInteractive_initial(ppm_initial_st, "STIM1")
+
+````
+
+We can see the normalized intensities **(non-standardized)**. 
+
+````{r STIM1 - non-standardized }
+plotPhosphositeInteractive_initial(ppm_initial, "STIM1")
+````
+
+There are many STIM1 sites in the dataset. **Please hover on the interactive graph to see which one is interesting.**
+
+As an example, below sites like STIM1-T517|S524, STIM1-S519, STIM1-S660 are plotted, which show increase after 900 seconds. Also STIM1-S621 shows increased phosphorylation first at 60 seconds and then again at 900 seconds. The intensities in the following plots are shown as in z-scores **(standardized)**.
+
+````{r STIM1 standardized, echo = TRUE}
+par(mfrow=c(2,2)) 
+plotPhosphosite_initial(ppm_initial_st, "STIM1", "T517|S524") # standardized
+plotPhosphosite_initial(ppm_initial_st, "STIM1", "S519") # standardized
+plotPhosphosite_initial(ppm_initial_st, "STIM1", "S621") # standardized
+plotPhosphosite_initial(ppm_initial_st, "STIM1", "S660") # standardized
+
+````
+
+**Please right-click and copy the image and then paste it on your presentation or word document.**
