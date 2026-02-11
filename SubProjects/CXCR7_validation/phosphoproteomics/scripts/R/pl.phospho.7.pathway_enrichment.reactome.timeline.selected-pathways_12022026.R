@@ -903,8 +903,6 @@ if (dir.exists("pathway_heatmaps")) {
 }
 
 
-
-
 plot_pathway_enrichment <- function(
     batch = "val",
     comparison = "dmso.vs.cxcr7",
@@ -978,8 +976,8 @@ plot_pathway_enrichment <- function(
       value = ifelse(regulation == "up", neg_log10_p, -neg_log10_p),
       pathway = factor(pathway, levels = pathway_order),
       dodge_group = factor(
-        paste0(timepoint_sec, "_", regulation),
-        levels = c("10_up", "10_down", "600_up", "600_down", "1800_up", "1800_down")
+        paste0(timepoint_sec),
+        levels = c("10", "600", "1800")
       )
     ) %>%
     filter(!is.na(value), !is.infinite(value))
@@ -1012,7 +1010,7 @@ plot_pathway_enrichment <- function(
   
   # Create plot
   plot <- ggplot(combined_data, aes(x = pathway, y = value, fill = timepoint_group, group = dodge_group)) +
-    geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.75) +
     scale_fill_manual(
       name = "Timepoint",
       values = colors_timepoint,

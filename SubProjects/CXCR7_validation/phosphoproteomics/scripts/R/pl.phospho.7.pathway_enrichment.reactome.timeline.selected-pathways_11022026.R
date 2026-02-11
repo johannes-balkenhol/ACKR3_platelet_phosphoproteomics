@@ -656,11 +656,9 @@ cat(strrep("█", 150), "\n\n")
 
 
 
-
 #############################
 ## 9) ENRICHMENT WITH all PATHWAYS
 #############################
-
 cat("\n", strrep("=", 70), "\n")
 cat("RUNNING PATHWAY ENRICHMENT\n")
 cat(strrep("=", 70), "\n\n")
@@ -668,74 +666,149 @@ cat(strrep("=", 70), "\n\n")
 up_results <- list()
 down_results <- list()
 
-# Function to process enrichment results
+# Function to process enrichment results (keep your existing one)
 process_enrichment <- function(res, selected_pathways) {
-  # Convert to data frame
   path3 <- as.data.frame(res)
   path3$pathway <- rownames(path3)
   
-  # Create pathway sizes
   pathways_df <- data.frame(
     pathway = names(selected_pathways),
     pw.size = sapply(selected_pathways, length),
     stringsAsFactors = FALSE
   )
   
-  # Merge
   path4 <- merge(path3, pathways_df, by = "pathway", all = FALSE)
   
-  # Clean columns
   colnames(path4)[2] <- "pvalue"
   colnames(path4)[3] <- "number.substrates"
   colnames(path4)[4] <- "substrates"
   
-  # Convert to numeric
   path4$pvalue <- as.numeric(path4$pvalue)
   path4$number.substrates <- as.numeric(path4$number.substrates)
   path4$pw.size <- as.numeric(path4$pw.size)
   path4$ratio <- path4$number.substrates / path4$pw.size
   path4$neg_log10_p <- -log10(path4$pvalue)
   
-  # Sort by ratio (descending)
   path4 <- path4[order(path4$ratio, decreasing = TRUE), ]
   
   return(path4)
 }
 
 # ============================================================
-# UP-REGULATED PATHWAYS
+# FISHER'S EXACT TEST — INDEPENDENT UP/DOWN ENRICHMENT
 # ============================================================
-cat("UP-REGULATED (alter='greater'):\n")
-cat(strrep("─", 70), "\n\n")
+# This tests: among upregulated genes, is this pathway over-represented?
+#              among downregulated genes, is this pathway over-represented?
+# These are independent tests, so both can be significant simultaneously.
 
-for (i in seq_len(ncol(Tc.gene))) {
-  res <- pathwayRankBasedEnrichment(Tc.gene[, i], annotation = pathways, alter = "greater")
-  path4 <- process_enrichment(res, pathways)
+fisher_enrichment <- function(vec, pathways_list, logfc_cutoff = 0, pval_cutoff = NULL) {
   
-  up_results[[names_input[i]]] <- path4
+  all_genes <- names(vec)
+  up_genes <- names(vec[vec > logfc_cutoff])
+  down_genes <- names(vec[vec < -logfc_cutoff])
+  n_total <- length(all_genes)
   
-  sig <- sum(path4$pvalue < 0.05)
-  cat(sprintf("✓ %s: %d pathways, %d significant (p<0.05)\n", 
-              names_input[i], nrow(path4), sig))
+  results_up <- list()
+  results_down <- list()
+  
+  for (pw_name in names(pathways_list)) {
+    pw_genes <- pathways_list[[pw_name]]
+    pw_in_data <- intersect(pw_genes, all_genes)
+    n_pathway <- length(pw_in_data)
+    
+    if (n_pathway < 3) next  # skip tiny overlaps
+    
+    # UP enrichment
+    n_up <- length(up_genes)
+    overlap_up <- length(intersect(pw_in_data, up_genes))
+    
+    # Fisher's exact test (2x2 table)
+    # In pathway & up | In pathway & not up
+    # Not in pathway & up | Not in pathway & not up
+    mat_up <- matrix(c(
+      overlap_up,                          # pathway & up
+      n_up - overlap_up,                   # not pathway & up
+      n_pathway - overlap_up,              # pathway & not up
+      n_total - n_pathway - n_up + overlap_up  # not pathway & not up
+    ), nrow = 2)
+    
+    fish_up <- fisher.test(mat_up, alternative = "greater")
+    
+    results_up[[pw_name]] <- data.frame(
+      pathway = pw_name,
+      pvalue = fish_up$p.value,
+      number.substrates = overlap_up,
+      substrates = paste(intersect(pw_in_data, up_genes), collapse = ";"),
+      pw.size = n_pathway,
+      ratio = overlap_up / n_pathway,
+      neg_log10_p = -log10(fish_up$p.value),
+      stringsAsFactors = FALSE
+    )
+    
+    # DOWN enrichment
+    n_down <- length(down_genes)
+    overlap_down <- length(intersect(pw_in_data, down_genes))
+    
+    mat_down <- matrix(c(
+      overlap_down,
+      n_down - overlap_down,
+      n_pathway - overlap_down,
+      n_total - n_pathway - n_down + overlap_down
+    ), nrow = 2)
+    
+    fish_down <- fisher.test(mat_down, alternative = "greater")
+    
+    results_down[[pw_name]] <- data.frame(
+      pathway = pw_name,
+      pvalue = fish_down$p.value,
+      number.substrates = overlap_down,
+      substrates = paste(intersect(pw_in_data, down_genes), collapse = ";"),
+      pw.size = n_pathway,
+      ratio = overlap_down / n_pathway,
+      neg_log10_p = -log10(fish_down$p.value),
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  list(
+    up = bind_rows(results_up) %>% arrange(pvalue),
+    down = bind_rows(results_down) %>% arrange(pvalue)
+  )
 }
 
 # ============================================================
-# DOWN-REGULATED PATHWAYS
+# RUN ENRICHMENT
 # ============================================================
+
+cat("Running Fisher's exact test (independent UP/DOWN):\n")
+cat(strrep("─", 70), "\n\n")
+
+for (i in seq_len(ncol(Tc.gene))) {
+  
+  vec <- Tc.gene[, i]
+  names(vec) <- toupper(gene_symbols)
+  
+  res <- fisher_enrichment(vec, pathways, logfc_cutoff = 0)
+  
+  up_results[[names_input[i]]] <- res$up
+  down_results[[names_input[i]]] <- res$down
+  
+  sig_up <- sum(res$up$pvalue < 0.05)
+  sig_down <- sum(res$down$pvalue < 0.05)
+  
+  cat(sprintf("✓ %s: UP %d sig | DOWN %d sig (p<0.05)\n", 
+              names_input[i], sig_up, sig_down))
+}
+
 cat("\n")
-cat("DOWN-REGULATED (alter='less'):\n")
-cat(strrep("─", 70), "\n\n")
+cat(strrep("=", 70), "\n")
+cat("✓ ENRICHMENT COMPLETE\n")
+cat("  Method: Fisher's exact test (independent directional enrichment)\n")
+cat("  UP and DOWN enrichments are independent — both can be significant\n")
+cat(strrep("=", 70), "\n\n")
 
-for (i in seq_len(ncol(Tc.gene))) {
-  res <- pathwayRankBasedEnrichment(Tc.gene[, i], annotation = pathways, alter = "less")
-  path4 <- process_enrichment(res, pathways)
-  
-  down_results[[names_input[i]]] <- path4
-  
-  sig <- sum(path4$pvalue < 0.05)
-  cat(sprintf("✓ %s: %d pathways, %d significant (p<0.05)\n", 
-              names_input[i], nrow(path4), sig))
-}
+
+
 
 
 
