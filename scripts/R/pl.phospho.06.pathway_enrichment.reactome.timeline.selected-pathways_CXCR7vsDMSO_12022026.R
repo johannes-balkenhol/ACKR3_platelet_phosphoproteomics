@@ -4,12 +4,12 @@
 ###############################################################
 
 suppressPackageStartupMessages({
+  library(dplyr)
   library(remotes)
   library(rlist)
   library(sjmisc)
   library(stringr)
-  library(plyr)
-  library(dplyr)
+  
   library(tidyr)
   
   library(annotate)
@@ -30,6 +30,7 @@ suppressPackageStartupMessages({
   library(clusterProfiler)
   library(directPA)
 })
+
 
 
 ###############################################################
@@ -170,24 +171,22 @@ if (use_old_data) {
 ###############################################################
 ## 4) COLLAPSE BY UNIPROT (CHOOSE TOP PHOSPHOSITE PER PROTEIN)
 ###############################################################
-
-
-cat("\nSTEP 3: Collapsing phosphosites by protein\n")
+cat("\nSTEP 4: Collapsing phosphosites by protein\n")
 cat(strrep("─", 80), "\n\n")
 
 # ← CHOOSE COLLAPSE METHOD
 collapse_by <- "individual"  # Options: "mean_logfc", "max_logfc", "pvalue", "individual"
 
 ## Combine dmso.vs.cxcr7 timepoints to find best phosphosite per protein
-combined_timepoints <- bind_rows(
-  dfs_new_raw$`val_10.dmso.vs.cxcr7` %>% mutate(timepoint = "10"),
-  dfs_new_raw$`val_600.dmso.vs.cxcr7` %>% mutate(timepoint = "600"),
-  dfs_new_raw$`val_1800.dmso.vs.cxcr7` %>% mutate(timepoint = "1800")
+combined_timepoints <- dplyr::bind_rows(
+  dfs_new_raw$`val_10.dmso.vs.cxcr7` %>% dplyr::mutate(timepoint = "10"),
+  dfs_new_raw$`val_600.dmso.vs.cxcr7` %>% dplyr::mutate(timepoint = "600"),
+  dfs_new_raw$`val_1800.dmso.vs.cxcr7` %>% dplyr::mutate(timepoint = "1800")
 )
 
-## ------------------------------------------------------------
+## ────────────────────────────────────────────────────────────
 ## Conditional: Collapse globally or individually per timepoint
-## ------------------------------------------------------------
+## ────────────────────────────────────────────────────────────
 
 if (collapse_by == "individual") {
   
@@ -198,58 +197,58 @@ if (collapse_by == "individual") {
   collapse_individual <- function(df, method = "pvalue") {
     if (method == "pvalue") {
       df %>%
-        group_by(uniprot_id) %>%
-        slice_min(PValue, n = 1, with_ties = FALSE) %>%
-        ungroup()
+        dplyr::group_by(uniprot_id) %>%
+        dplyr::slice_min(PValue, n = 1, with_ties = FALSE) %>%
+        dplyr::ungroup()
     } else if (method == "max_logfc") {
       df %>%
-        mutate(abs_logFC = abs(logFC)) %>%
-        group_by(uniprot_id) %>%
-        slice_max(abs_logFC, n = 1, with_ties = FALSE) %>%
-        ungroup() %>%
-        select(-abs_logFC)
+        dplyr::mutate(abs_logFC = abs(logFC)) %>%
+        dplyr::group_by(uniprot_id) %>%
+        dplyr::slice_max(abs_logFC, n = 1, with_ties = FALSE) %>%
+        dplyr::ungroup() %>%
+        dplyr::select(-abs_logFC)
     } else {  # mean_logfc - not applicable for single timepoint
       df %>%
-        mutate(abs_logFC = abs(logFC)) %>%
-        group_by(uniprot_id) %>%
-        slice_max(abs_logFC, n = 1, with_ties = FALSE) %>%
-        ungroup() %>%
-        select(-abs_logFC)
+        dplyr::mutate(abs_logFC = abs(logFC)) %>%
+        dplyr::group_by(uniprot_id) %>%
+        dplyr::slice_max(abs_logFC, n = 1, with_ties = FALSE) %>%
+        dplyr::ungroup() %>%
+        dplyr::select(-abs_logFC)
     }
   }
   
   # Collapse each dataset individually
   all_inputs_collapsed <- lapply(dfs_new_raw, function(df) {
     collapse_individual(df, method = "pvalue") %>%
-      arrange(uniprot_id) %>%
-      select(uniprot_id, name, PSite, Average, logFC, PValue)
+      dplyr::arrange(uniprot_id) %>%
+      dplyr::select(uniprot_id, name, PSite, Average, logFC, PValue)
   })
   
   # Track which phosphosites were selected at each timepoint
-  selection_tracking <- bind_rows(
+  selection_tracking <- dplyr::bind_rows(
     all_inputs_collapsed$`val_10.dmso.vs.cxcr7` %>% 
-      select(uniprot_id, name, PSite) %>% 
-      mutate(timepoint = "10s"),
+      dplyr::select(uniprot_id, name, PSite) %>% 
+      dplyr::mutate(timepoint = "10s"),
     all_inputs_collapsed$`val_600.dmso.vs.cxcr7` %>% 
-      select(uniprot_id, name, PSite) %>% 
-      mutate(timepoint = "600s"),
+      dplyr::select(uniprot_id, name, PSite) %>% 
+      dplyr::mutate(timepoint = "600s"),
     all_inputs_collapsed$`val_1800.dmso.vs.cxcr7` %>% 
-      select(uniprot_id, name, PSite) %>% 
-      mutate(timepoint = "1800s")
+      dplyr::select(uniprot_id, name, PSite) %>% 
+      dplyr::mutate(timepoint = "1800s")
   )
   
   # Reshape to wide format to see differences
   selection_wide <- selection_tracking %>%
-    pivot_wider(
+    tidyr::pivot_wider(
       id_cols = c(uniprot_id, name),
       names_from = timepoint,
       values_from = PSite
     )
   
   # Save tracking
-  write.csv(selection_wide, 
-            "selected_phosphosites_individual_per_timepoint.csv", 
-            row.names = FALSE)
+  utils::write.csv(selection_wide, 
+                   "selected_phosphosites_individual_per_timepoint.csv", 
+                   row.names = FALSE)
   
   cat("✓ Method: Individual collapse (best p-value per timepoint)\n")
   cat("✓ Saved: selected_phosphosites_individual_per_timepoint.csv\n\n")
@@ -263,7 +262,7 @@ if (collapse_by == "individual") {
   cat(strrep("-", 80), "\n")
   
   for (kinase in c("SHC1", "SRC", "AKT1", "PRKCA", "PRKCD")) {
-    kinase_selection <- selection_wide %>% filter(name == kinase)
+    kinase_selection <- selection_wide %>% dplyr::filter(name == kinase)
     
     if (nrow(kinase_selection) > 0) {
       cat(sprintf("  %s:\n", kinase))
@@ -291,9 +290,9 @@ if (collapse_by == "individual") {
   
   # Count how many proteins have different sites
   different_sites <- selection_wide %>%
-    rowwise() %>%
-    mutate(n_unique = n_distinct(c(`10s`, `600s`, `1800s`), na.rm = TRUE)) %>%
-    ungroup()
+    dplyr::rowwise() %>%
+    dplyr::mutate(n_unique = dplyr::n_distinct(c(`10s`, `600s`, `1800s`), na.rm = TRUE)) %>%
+    dplyr::ungroup()
   
   cat("\n", strrep("-", 80), "\n")
   cat(sprintf("Proteins with SAME site across timepoints: %d\n", 
@@ -305,36 +304,36 @@ if (collapse_by == "individual") {
   
   ## Global collapse (same phosphosite across all timepoints)
   best_psites <- combined_timepoints %>%
-    group_by(uniprot_id, name, PSite) %>%
-    summarise(
+    dplyr::group_by(uniprot_id, name, PSite) %>%
+    dplyr::summarise(
       mean_abs_logFC = mean(abs(logFC), na.rm = TRUE),
       max_abs_logFC = max(abs(logFC), na.rm = TRUE),
       min_pvalue = min(PValue, na.rm = TRUE),
       .groups = "drop"
     ) %>%
-    group_by(uniprot_id) %>%
+    dplyr::group_by(uniprot_id) %>%
     {
       if (collapse_by == "mean_logfc") {
-        slice_max(., mean_abs_logFC, n = 1, with_ties = FALSE)
+        dplyr::slice_max(., mean_abs_logFC, n = 1, with_ties = FALSE)
       } else if (collapse_by == "max_logfc") {
-        slice_max(., max_abs_logFC, n = 1, with_ties = FALSE)
+        dplyr::slice_max(., max_abs_logFC, n = 1, with_ties = FALSE)
       } else {  # pvalue
-        slice_min(., min_pvalue, n = 1, with_ties = FALSE)
+        dplyr::slice_min(., min_pvalue, n = 1, with_ties = FALSE)
       }
     } %>%
-    ungroup() %>%
-    select(uniprot_id, PSite)
+    dplyr::ungroup() %>%
+    dplyr::select(uniprot_id, PSite)
   
   cat(sprintf("✓ Selected %d phosphosites (one per protein)\n", nrow(best_psites)))
   
   all_inputs_collapsed <- lapply(dfs_new_raw, function(df) {
     df %>%
-      inner_join(best_psites, by = c("uniprot_id", "PSite")) %>%
-      arrange(uniprot_id) %>%
-      select(uniprot_id, name, PSite, Average, logFC, PValue)
+      dplyr::inner_join(best_psites, by = c("uniprot_id", "PSite")) %>%
+      dplyr::arrange(uniprot_id) %>%
+      dplyr::select(uniprot_id, name, PSite, Average, logFC, PValue)
   })
   
-  method_name <- case_when(
+  method_name <- dplyr::case_when(
     collapse_by == "mean_logfc" ~ "Mean |logFC| (consistent effects)",
     collapse_by == "max_logfc" ~ "Max |logFC| (peak effects)",
     collapse_by == "pvalue" ~ "Min p-value (significance)",
@@ -348,11 +347,11 @@ if (collapse_by == "individual") {
   }
   
   best_psites_annotated <- best_psites %>%
-    left_join(combined_timepoints %>% distinct(uniprot_id, name), by = "uniprot_id")
+    dplyr::left_join(combined_timepoints %>% dplyr::distinct(uniprot_id, name), by = "uniprot_id")
   
-  write.csv(best_psites_annotated, 
-            "selected_phosphosites_for_enrichment.csv", 
-            row.names = FALSE)
+  utils::write.csv(best_psites_annotated, 
+                   "selected_phosphosites_for_enrichment.csv", 
+                   row.names = FALSE)
   
   cat("\n✓ Saved: selected_phosphosites_for_enrichment.csv\n")
   cat("\n✓ Same phosphosite used across all timepoints!\n")
@@ -361,7 +360,7 @@ if (collapse_by == "individual") {
 cat("\n")
 
 ###############################################################
-## 4) BUILD LOG2FC MATRIX
+## 5) BUILD LOG2FC MATRIX
 ###############################################################
 
 
@@ -386,7 +385,7 @@ cat("\n")
 
 
 ###############################################################
-## 5) LOAD REACTOME PATHWAYS & MATCH TO CURATED LIST
+## 6) LOAD REACTOME PATHWAYS & MATCH TO CURATED LIST
 ###############################################################
 
 cat("\n")
@@ -419,7 +418,7 @@ names(pathways_all) <- pathway_names_clean
 cat(sprintf("✓ Total Reactome pathways (Homo sapiens): %d\n\n", length(pathways_all)))
 
 ###############################################################
-## 6) MATCH CURATED PATHWAYS TO REACTOME DATABASE
+## 7) MATCH CURATED PATHWAYS TO REACTOME DATABASE
 ###############################################################
 
 cat("Matching curated pathways to Reactome database...\n\n")
@@ -1213,7 +1212,7 @@ create_pathway_heatmap_RANKED <- function(pathway_num,
                                           phospho_data,
                                           batch,
                                           comparison,
-                                          max_sites = 20,
+                                          max_sites = 999,
                                           output_dir = "pathway_heatmaps_FINAL") {
   
   cat(sprintf("  #%02d: %-65s | ", pathway_num, 
@@ -1366,7 +1365,7 @@ for (i in 1:nrow(top_pathways_master)) {
     phospho_data = phospho_wide_filtered,
     batch = analysis_batch,
     comparison = analysis_comparison,
-    max_sites = 20,  # ← LIMIT TO 20 SITES
+    max_sites = 999,  # ← LIMIT TO 20 SITES
     output_dir = "pathway_heatmaps_FINAL"
   )
   

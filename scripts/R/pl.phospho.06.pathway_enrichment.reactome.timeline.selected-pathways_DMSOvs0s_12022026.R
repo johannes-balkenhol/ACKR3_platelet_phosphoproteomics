@@ -8,7 +8,6 @@ suppressPackageStartupMessages({
   library(rlist)
   library(sjmisc)
   library(stringr)
-  library(plyr)
   library(dplyr)
   library(tidyr)
   
@@ -104,11 +103,11 @@ names(dfs_new) <- c(
 
 ## select only the important comparison
 dfs_new <- list(
-  top.10, top.600, top.1800
+  top.10.dmso.vs.0s, top.600.dmso.vs.0s, top.1800.dmso.vs.0s
 )
 
 names(dfs_new) <- c(
-  "val_10.dmso.vs.cxcr7", "val_600.dmso.vs.cxcr7", "val_1800.dmso.vs.cxcr7"
+  "val_10.dmso.vs.0s",    "val_600.dmso.vs.0s",    "val_1800.dmso.vs.0s"
 )
 
 
@@ -166,11 +165,9 @@ if (use_old_data) {
   
 }
 
-
 ###############################################################
 ## 4) COLLAPSE BY UNIPROT (CHOOSE TOP PHOSPHOSITE PER PROTEIN)
 ###############################################################
-
 
 cat("\nSTEP 3: Collapsing phosphosites by protein\n")
 cat(strrep("─", 80), "\n\n")
@@ -178,11 +175,11 @@ cat(strrep("─", 80), "\n\n")
 # ← CHOOSE COLLAPSE METHOD
 collapse_by <- "individual"  # Options: "mean_logfc", "max_logfc", "pvalue", "individual"
 
-## Combine dmso.vs.cxcr7 timepoints to find best phosphosite per protein
+## Combine dmso.vs.0s timepoints to find best phosphosite per protein
 combined_timepoints <- bind_rows(
-  dfs_new_raw$`val_10.dmso.vs.cxcr7` %>% mutate(timepoint = "10"),
-  dfs_new_raw$`val_600.dmso.vs.cxcr7` %>% mutate(timepoint = "600"),
-  dfs_new_raw$`val_1800.dmso.vs.cxcr7` %>% mutate(timepoint = "1800")
+  dfs_new_raw$`val_10.dmso.vs.0s` %>% mutate(timepoint = "10"),
+  dfs_new_raw$`val_600.dmso.vs.0s` %>% mutate(timepoint = "600"),
+  dfs_new_raw$`val_1800.dmso.vs.0s` %>% mutate(timepoint = "1800")
 )
 
 ## ------------------------------------------------------------
@@ -208,7 +205,7 @@ if (collapse_by == "individual") {
         slice_max(abs_logFC, n = 1, with_ties = FALSE) %>%
         ungroup() %>%
         select(-abs_logFC)
-    } else {  # mean_logfc - not applicable for single timepoint
+    } else {  # mean_logfc
       df %>%
         mutate(abs_logFC = abs(logFC)) %>%
         group_by(uniprot_id) %>%
@@ -227,13 +224,13 @@ if (collapse_by == "individual") {
   
   # Track which phosphosites were selected at each timepoint
   selection_tracking <- bind_rows(
-    all_inputs_collapsed$`val_10.dmso.vs.cxcr7` %>% 
+    all_inputs_collapsed$`val_10.dmso.vs.0s` %>% 
       select(uniprot_id, name, PSite) %>% 
       mutate(timepoint = "10s"),
-    all_inputs_collapsed$`val_600.dmso.vs.cxcr7` %>% 
+    all_inputs_collapsed$`val_600.dmso.vs.0s` %>% 
       select(uniprot_id, name, PSite) %>% 
       mutate(timepoint = "600s"),
-    all_inputs_collapsed$`val_1800.dmso.vs.cxcr7` %>% 
+    all_inputs_collapsed$`val_1800.dmso.vs.0s` %>% 
       select(uniprot_id, name, PSite) %>% 
       mutate(timepoint = "1800s")
   )
@@ -360,8 +357,10 @@ if (collapse_by == "individual") {
 
 cat("\n")
 
+
+
 ###############################################################
-## 4) BUILD LOG2FC MATRIX
+## 5) BUILD LOG2FC MATRIX
 ###############################################################
 
 
@@ -386,7 +385,7 @@ cat("\n")
 
 
 ###############################################################
-## 5) LOAD REACTOME PATHWAYS & MATCH TO CURATED LIST
+## 6) LOAD REACTOME PATHWAYS & MATCH TO CURATED LIST
 ###############################################################
 
 cat("\n")
@@ -419,7 +418,7 @@ names(pathways_all) <- pathway_names_clean
 cat(sprintf("✓ Total Reactome pathways (Homo sapiens): %d\n\n", length(pathways_all)))
 
 ###############################################################
-## 6) MATCH CURATED PATHWAYS TO REACTOME DATABASE
+## 7) MATCH CURATED PATHWAYS TO REACTOME DATABASE
 ###############################################################
 
 cat("Matching curated pathways to Reactome database...\n\n")
@@ -823,6 +822,7 @@ for (time in names(down_results)) {
 }
 
 
+
 #############################
 ## PARSE COMPARISONS (time, batch, comparison)
 #############################
@@ -905,7 +905,7 @@ if (dir.exists("pathway_heatmaps")) {
 
 plot_pathway_enrichment <- function(
     batch = "val",
-    comparison = "dmso.vs.cxcr7",
+    comparison = "dmso.vs.0s",
     n_pathways = 10,
     sort_by = "pvalue",
     save_plot = TRUE,
@@ -1029,7 +1029,7 @@ plot_pathway_enrichment <- function(
     geom_hline(yintercept = 0, color = "black", linewidth = 0.8) +
     theme_cowplot(font_size = 11) +
     theme(
-      axis.text.x = element_text(angle = 45, hjust = 1, size = 9, color = "black"),
+      axis.text.x = element_text(angle = 90, hjust = 1, size = 9, color = "black"),
       axis.text.y = element_text(size = 10, color = "black"),
       axis.title.y = element_text(size = 11, face = "bold"),
       plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
@@ -1077,7 +1077,7 @@ plot_pathway_enrichment <- function(
 ## RUN STEP 13
 result <- plot_pathway_enrichment(
   batch = "val",
-  comparison = "dmso.vs.cxcr7",
+  comparison = "dmso.vs.0s",
   n_pathways = 30,
   save_plot = TRUE,
   output_format = c("pdf", "png")
@@ -1158,9 +1158,9 @@ cat(sprintf("  ✓ Mapped %d genes to %d pathways\n\n",
 
 cat("Step B: Loading UNCOLLAPSED phosphosite data...\n")
 
-val_datasets <- c("val_10.dmso.vs.cxcr7", 
-                  "val_600.dmso.vs.cxcr7", 
-                  "val_1800.dmso.vs.cxcr7")
+val_datasets <- c("val_10.dmso.vs.0s", 
+                  "val_600.dmso.vs.0s", 
+                  "val_1800.dmso.vs.0s")
 
 # Use RAW data (dfs_new_raw) instead of collapsed data
 all_phosphosite_data <- lapply(val_datasets, function(time_name) {

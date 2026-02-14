@@ -8,7 +8,6 @@ suppressPackageStartupMessages({
   library(rlist)
   library(sjmisc)
   library(stringr)
-  library(plyr)
   library(dplyr)
   library(tidyr)
   
@@ -104,11 +103,11 @@ names(dfs_new) <- c(
 
 ## select only the important comparison
 dfs_new <- list(
-  top.10, top.600, top.1800
+  top.10.cxcr7.vs.0s, top.600.cxcr7.vs.0s, top.1800.cxcr7.vs.0s
 )
 
 names(dfs_new) <- c(
-  "val_10.dmso.vs.cxcr7", "val_600.dmso.vs.cxcr7", "val_1800.dmso.vs.cxcr7"
+  "val_10.cxcr7.vs.0s",    "val_600.cxcr7.vs.0s",    "val_1800.cxcr7.vs.0s"
 )
 
 
@@ -120,6 +119,9 @@ cat(sprintf("✓ Loaded %d NEW validation datasets\n\n", length(dfs_new_raw)))
 for (nm in names(dfs_new_raw)) {
   cat(sprintf("  • %s (%d phosphosites)\n", nm, nrow(dfs_new_raw[[nm]])))
 }
+
+
+
 
 ###############################################################
 ## 3) OPTIONAL: LOAD & HARMONIZE OLD INITIAL DATASETS
@@ -166,11 +168,9 @@ if (use_old_data) {
   
 }
 
-
 ###############################################################
 ## 4) COLLAPSE BY UNIPROT (CHOOSE TOP PHOSPHOSITE PER PROTEIN)
 ###############################################################
-
 
 cat("\nSTEP 3: Collapsing phosphosites by protein\n")
 cat(strrep("─", 80), "\n\n")
@@ -178,11 +178,11 @@ cat(strrep("─", 80), "\n\n")
 # ← CHOOSE COLLAPSE METHOD
 collapse_by <- "individual"  # Options: "mean_logfc", "max_logfc", "pvalue", "individual"
 
-## Combine dmso.vs.cxcr7 timepoints to find best phosphosite per protein
+## Combine CXCR7.vs.0s timepoints to find best phosphosite per protein
 combined_timepoints <- bind_rows(
-  dfs_new_raw$`val_10.dmso.vs.cxcr7` %>% mutate(timepoint = "10"),
-  dfs_new_raw$`val_600.dmso.vs.cxcr7` %>% mutate(timepoint = "600"),
-  dfs_new_raw$`val_1800.dmso.vs.cxcr7` %>% mutate(timepoint = "1800")
+  dfs_new_raw$`val_10.cxcr7.vs.0s` %>% mutate(timepoint = "10"),
+  dfs_new_raw$`val_600.cxcr7.vs.0s` %>% mutate(timepoint = "600"),
+  dfs_new_raw$`val_1800.cxcr7.vs.0s` %>% mutate(timepoint = "1800")
 )
 
 ## ------------------------------------------------------------
@@ -208,7 +208,7 @@ if (collapse_by == "individual") {
         slice_max(abs_logFC, n = 1, with_ties = FALSE) %>%
         ungroup() %>%
         select(-abs_logFC)
-    } else {  # mean_logfc - not applicable for single timepoint
+    } else {  # mean_logfc
       df %>%
         mutate(abs_logFC = abs(logFC)) %>%
         group_by(uniprot_id) %>%
@@ -227,13 +227,13 @@ if (collapse_by == "individual") {
   
   # Track which phosphosites were selected at each timepoint
   selection_tracking <- bind_rows(
-    all_inputs_collapsed$`val_10.dmso.vs.cxcr7` %>% 
+    all_inputs_collapsed$`val_10.cxcr7.vs.0s` %>% 
       select(uniprot_id, name, PSite) %>% 
       mutate(timepoint = "10s"),
-    all_inputs_collapsed$`val_600.dmso.vs.cxcr7` %>% 
+    all_inputs_collapsed$`val_600.cxcr7.vs.0s` %>% 
       select(uniprot_id, name, PSite) %>% 
       mutate(timepoint = "600s"),
-    all_inputs_collapsed$`val_1800.dmso.vs.cxcr7` %>% 
+    all_inputs_collapsed$`val_1800.cxcr7.vs.0s` %>% 
       select(uniprot_id, name, PSite) %>% 
       mutate(timepoint = "1800s")
   )
@@ -359,6 +359,283 @@ if (collapse_by == "individual") {
 }
 
 cat("\n")
+
+
+
+
+
+###############################################################
+## 5) LOAD REACTOME PATHWAYS & MATCH TO CURATED LIST
+###############################################################
+
+cat("\n")
+cat(strrep("▓", 80), "\n")
+cat("STEP 5: Loading Reactome pathways & curated selection\n")
+cat(strrep("▓", 80), "\n\n")
+
+# Load Reactome pathways (ONCE)
+pathways_all <- as.list(reactomePATHID2EXTID)
+path_names <- as.list(reactomePATHID2NAME)
+name_id <- match(names(pathways_all), names(path_names))
+names(pathways_all) <- unlist(path_names)[name_id]
+
+# Keep only HOMO SAPIENS
+pathways_all <- pathways_all[grepl("Homo sapiens", names(pathways_all), ignore.case = TRUE)]
+
+# Convert Entrez IDs → Gene symbols
+pathways_all <- lapply(pathways_all, function(path) {
+  gene_name <- unname(getSYMBOL(path, data = "org.Hs.eg"))
+  toupper(unique(gene_name))
+})
+
+# Clean pathway names
+pathway_names_clean <- names(pathways_all)
+pathway_names_clean <- gsub("Homo sapiens: ", "", pathway_names_clean, ignore.case = TRUE)
+pathway_names_clean <- gsub("Homo sapiens >> ", "", pathway_names_clean, ignore.case = TRUE)
+pathway_names_clean <- trimws(pathway_names_clean)
+names(pathways_all) <- pathway_names_clean
+
+cat(sprintf("✓ Total Reactome pathways (Homo sapiens): %d\n\n", length(pathways_all)))
+
+###############################################################
+## 6) MATCH CURATED PATHWAYS TO REACTOME DATABASE
+###############################################################
+
+cat("Matching curated pathways to Reactome database...\n\n")
+
+manual_path_refined <- c(
+  # Platelet pathways
+  "Platelet activation",
+  "Platelet degranulation",
+  "Response to elevated platelet cytosolic Ca2+",
+  "Platelet Adhesion to exposed collagen",
+  "Hemostasis",
+  "Platelet calcium homeostasis",
+  "Platelet Aggregation (Plug Formation)",
+  
+  # Clathrin & Endocytosis
+  "Clathrin-mediated endocytosis",
+  "Cargo recognition for clathrin-mediated endocytosis",
+  
+  # Integrin signaling
+  "Integrin cell surface interactions",
+  "Integrin signaling",
+  
+  # RTK signaling
+  "Signaling by Receptor Tyrosine Kinases",
+  #"SHC1 events in EGFR signaling",                    # ADDED - from original figure
+  #"SHC1 events in ERBB2 signaling",                   # ADDED - from original figure
+  #"SHC1 events in ERBB4 signaling",                   # ADDED - from original figure
+  
+  # GPCR pathways
+  "Signaling by GPCR",
+  "GPCR downstream signalling",
+  "G beta:gamma signalling through PI3Kgamma",
+  "Activation of G protein gated Potassium channels",
+  "G beta:gamma signalling through PLC beta",
+  "G beta:gamma signalling through BTK",
+  "G beta:gamma signalling through CDC42",
+  "G protein gated Potassium channels",
+  "GPVI-mediated activation cascade",
+  
+  # FCGR
+  "FCGR activation",
+  "Fcgamma receptor (FCGR) dependent phagocytosis",
+  
+  # PKA pathways
+  "PKA activation",
+  "PKA activation in glucagon signalling",
+  "Adenylate cyclase activating pathway",
+  "Adenylate cyclase inhibitory pathway",
+  "CREB1 phosphorylation through the activation of Adenylate Cyclase",
+  "PKA-mediated phosphorylation of CREB",
+  "PKA-mediated phosphorylation of key metabolic factors",
+  "Gastrin-CREB signalling pathway via PKC and MAPK",
+  
+  # cGMP/PKG
+  "cGMP effects",
+  "Nitric oxide stimulates guanylate cyclase",
+  
+  # AMPK
+  "Energy dependent regulation of mTOR by LKB1-AMPK",
+  "Activation of AMPK downstream of NMDARs",
+  "AMPK inhibits chREBP transcriptional activation activity",
+  
+  # MAPK/ERK pathways
+  "RAF activation",
+  "Signalling to ERKs",                               # Already included
+  "ERK/MAPK targets",
+  "ERKs are inactivated",
+  "Signaling by BRAF and RAF1 fusions",
+  "Negative regulation of MAPK pathway",
+  "GRB2:SOS provides linkage to MAPK signaling for Integrins",
+  "Signal attenuation",                               # ADDED - from original figure
+  
+  # RAS pathways
+  "Regulation of RAS by GAPs",
+  
+  # RHO GTPases
+  "Signaling by Rho GTPases",
+  "RHOA GTPase cycle",
+  #"RHOB GTPase cycle",
+  #"RHOC GTPase cycle",
+  #"RHOV GTPase cycle",
+  "RHO GTPase cycle",
+  "RHO GTPase Effectors",
+  "RHO GTPases Activate WASPs and WAVEs",
+  "RHO GTPases Activate NADPH Oxidases",
+  
+  # PI3K/AKT/mTOR
+  "PIP3 activates AKT signaling",
+  "AKT phosphorylates targets in the cytosol",
+  "Negative regulation of the PI3K/AKT network",      # Already included
+  "PI3K Cascade",
+  "Effects of PIP2 hydrolysis",
+  "Ca-dependent events",
+  "MTOR signalling",
+  "mTORC1-mediated signalling",
+  "Amino acids regulate mTORC1",
+  
+  # Autophagy
+  "Autophagy",
+  
+  # Non-receptor TKs
+  "Signaling by Non-Receptor Tyrosine Kinases",
+  "DAP12 signaling",
+  
+  # ECM
+  "Extracellular matrix organization",
+  "Degradation of the extracellular matrix",
+  
+  # Trafficking
+  "Membrane Trafficking",
+  
+  # Lipid signaling
+  "Arachidonic acid metabolism",
+  "Synthesis of Prostaglandins (PG) and Thromboxanes (TX)",
+  "Thromboxane signalling through TP receptor",
+  "Eicosanoids",
+  "DAG and IP3 signaling",
+  "Inositol phosphate metabolism",
+  "Synthesis of IP3 and IP4 in the cytosol",
+  "Arachidonate production from DAG",
+  "Eicosanoid ligand-binding receptors",
+  "Acyl chain remodeling of DAG and TAG",
+  "PLC beta mediated events",
+  "Role of phospholipids in phagocytosis",
+  
+  # Core platelet function (MUST ADD)
+  "Platelet activation, signaling and aggregation",
+  "Platelet homeostasis",
+  "P2Y receptors",
+  "ADP signalling through P2Y purinoceptor 12",
+  "ADP signalling through P2Y purinoceptor 1",
+  "Thrombin signalling through proteinase activated receptors (PARs)",
+  
+  # Platelet adhesion to collagen (IMPORTANT)
+  "Defects of platelet adhesion to exposed collagen",
+  
+  # Collagen pathways (relevant for platelet adhesion)
+  "Collagen degradation",
+  "Collagen formation",
+  "Collagen biosynthesis and modifying enzymes",
+  
+  # PKC/Phospholipase C (MISSING from your list!)
+  "PLCG1 events in ERBB2 signaling",
+  "PLC-gamma1 signalling",
+  "EGFR interacts with phospholipase C-gamma",
+  "Phospholipase C-mediated cascade: FGFR1",
+  
+  # Additional platelet-relevant
+  "Platelet sensitization by LDL",
+  #"RUNX1 regulates genes involved in megakaryocyte differentiation and platelet function",
+  #"Factors involved in megakaryocyte development and platelet production",
+  
+  # Prostanoid receptors (IMPORTANT - includes TXA2 receptor)
+  "Prostanoid ligand receptors",
+  
+  # Serotonin receptors (dense granule release, platelet aggregation)
+  "Serotonin receptors"
+)
+
+
+
+# Use your curated pathway list
+#selected_pathways <- unique(manual_filter)
+selected_pathways <- unique(manual_path_refined) 
+
+
+# Matching function
+match_pathway <- function(query, all_names) {
+  # Try exact match first
+  idx <- which(tolower(all_names) == tolower(query))
+  if (length(idx) > 0) return(all_names[idx[1]])
+  
+  # Try partial match if no exact match
+  idx <- grep(tolower(gsub(" ", ".*", query)), tolower(all_names))
+  if (length(idx) > 0) return(all_names[idx[1]])
+  
+  return(NA)
+}
+
+# Match all 80 curated pathways
+pathways <- list()
+matched_count <- 0
+not_found <- character()
+
+for (path in manual_path_refined) {
+  found_name <- match_pathway(path, pathway_names_clean)
+  
+  if (!is.na(found_name)) {
+    pathways[[path]] <- pathways_all[[found_name]]
+    cat("✓", path, "\n")
+    matched_count <- matched_count + 1
+  } else {
+    cat("✗", path, "\n")
+    not_found <- c(not_found, path)
+  }
+}
+
+cat("\n", strrep("=", 80), "\n")
+cat("PATHWAY MATCHING SUMMARY\n")
+cat(strrep("=", 80), "\n\n")
+
+cat(sprintf("Total curated pathways: %d\n", length(manual_path_refined)))
+cat(sprintf("Successfully matched:  %d\n", matched_count))
+cat(sprintf("NOT found:             %d\n", length(not_found)))
+cat(sprintf("Match rate:            %.1f%%\n\n", 100 * matched_count / length(manual_path_refined)))
+
+if (length(not_found) > 0) {
+  cat("NOT FOUND:\n")
+  for (p in not_found) cat(" -", p, "\n")
+}
+
+cat(sprintf("\n✓ Ready for enrichment with %d pathways!\n\n", length(pathways)))
+
+# Save reference
+selected_pathways_df <- data.frame(
+  pathway_number = seq_along(pathways),
+  pathway_name = names(pathways),
+  n_genes = sapply(pathways, length)
+)
+
+write.csv(selected_pathways_df, 
+          "selected_pathways_matched.csv", 
+          row.names = FALSE)
+
+cat("✓ Saved reference: selected_pathways_matched.csv\n\n")
+
+Tc.gene <- logfc_matrix
+rownames(Tc.gene) <- toupper(gene_symbols)  # ← FIX: Use gene symbols, uppercase
+names_input <- colnames(Tc.gene)
+
+cat(strrep("█", 150), "\n")
+cat("✓ READY FOR PATHWAY ENRICHMENT\n")
+cat(strrep("█", 150), "\n\n")
+
+
+
+
 
 ###############################################################
 ## 4) BUILD LOG2FC MATRIX
@@ -657,6 +934,7 @@ cat(strrep("█", 150), "\n\n")
 
 
 
+
 #############################
 ## 9) ENRICHMENT WITH all PATHWAYS
 #############################
@@ -805,7 +1083,7 @@ print(top_down)
 #############################
 
 # Create output directory
-output_dir <- "/mnt/user-data/outputs/enrichment_results"
+output_dir <- "D:/Research/CXCR7_platelet_analysis"
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
 # Save UP-regulated enrichment tables
@@ -821,6 +1099,11 @@ for (time in names(down_results)) {
               file = file.path(output_dir, paste0("less_", time, "_pathways.txt")),
               sep = "\t", row.names = FALSE)
 }
+
+
+
+
+
 
 
 #############################
@@ -905,7 +1188,7 @@ if (dir.exists("pathway_heatmaps")) {
 
 plot_pathway_enrichment <- function(
     batch = "val",
-    comparison = "dmso.vs.cxcr7",
+    comparison = "cxcr7.vs.0s",
     n_pathways = 10,
     sort_by = "pvalue",
     save_plot = TRUE,
@@ -1029,7 +1312,7 @@ plot_pathway_enrichment <- function(
     geom_hline(yintercept = 0, color = "black", linewidth = 0.8) +
     theme_cowplot(font_size = 11) +
     theme(
-      axis.text.x = element_text(angle = 45, hjust = 1, size = 9, color = "black"),
+      axis.text.x = element_text(angle = 90, hjust = 1, size = 9, color = "black"),
       axis.text.y = element_text(size = 10, color = "black"),
       axis.title.y = element_text(size = 11, face = "bold"),
       plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
@@ -1077,7 +1360,7 @@ plot_pathway_enrichment <- function(
 ## RUN STEP 13
 result <- plot_pathway_enrichment(
   batch = "val",
-  comparison = "dmso.vs.cxcr7",
+  comparison = "cxcr7.vs.0s",
   n_pathways = 30,
   save_plot = TRUE,
   output_format = c("pdf", "png")
@@ -1121,7 +1404,7 @@ cat(sprintf("  Comparison: %s\n\n", analysis_comparison))
 # Display the pathway list we're using
 cat("Pathway list from Step 13:\n")
 cat(strrep("-", 80), "\n")
-print(top_pathways_master %>% select(pathway_num, pathway), n = 30)
+print(top_pathways_master %>% dplyr::select(pathway_num, pathway), n = 30)
 cat("\n")
 
 ## ------------------------------------------------------------
@@ -1158,9 +1441,9 @@ cat(sprintf("  ✓ Mapped %d genes to %d pathways\n\n",
 
 cat("Step B: Loading UNCOLLAPSED phosphosite data...\n")
 
-val_datasets <- c("val_10.dmso.vs.cxcr7", 
-                  "val_600.dmso.vs.cxcr7", 
-                  "val_1800.dmso.vs.cxcr7")
+val_datasets <- c("val_10.cxcr7.vs.0s", 
+                  "val_600.cxcr7.vs.0s", 
+                  "val_1800.cxcr7.vs.0s")
 
 # Use RAW data (dfs_new_raw) instead of collapsed data
 all_phosphosite_data <- lapply(val_datasets, function(time_name) {
@@ -1837,6 +2120,10 @@ cat("     cluster_1-3_full.pdf\n")  # ← FIXED: Changed to 1-3
 cat("     cluster_1-3_top30.pdf\n")  # ← FIXED: Changed to 1-3
 cat("     cluster_1-3_top30_candidates.csv\n")  # ← FIXED: Changed to 1-3
 cat("     cluster_characterization.csv\n\n")
+
+
+
+
 
 
 

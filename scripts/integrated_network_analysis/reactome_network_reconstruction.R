@@ -1,412 +1,326 @@
 ###############################################################
-## REACTOME NETWORK RECONSTRUCTION WITH PHOSPHO-DATA OVERLAY
-## Strategy: Reactome = backbone, phospho-data = evidence layer
+## REACTOME-ONLY NETWORK WITH MULTI-PSITE VISUALIZATION
+## Handles: Multiple psites per node, multiple timepoints
 ###############################################################
 
 library(tidyverse)
 library(igraph)
-library(ReactomePA)
-library(reactome.db)
-library(OmnipathR)
 library(ggraph)
 library(tidygraph)
+library(patchwork)
 
 ## ============================================================
-## STEP 1: EXTRACT ALL PHOSPHOSITES FROM PATHWAY HEATMAPS
+## STEP 1: LOAD YOUR PHOSPHO-DATA
 ## ============================================================
 
-cat("STEP 1: Extracting phosphosites from pathway heatmaps...\n")
+cat("STEP 1: Loading phosphosite data...\n")
 
-# Read the pathway summary (from your Step 14)
-pathway_summary <- read_csv("analysis/pathway_enrichment/reactome/pathway_heatmaps_FINAL/pathway_summary.csv")
+# Your existing phospho_wide from Step 14
+# Already has: phosphosite_id, name, PSite, logFC_10/600/1800, PValue_10/600/1800
 
-# Load UNCOLLAPSED phosphosite data (from your Step 14 code)
-val_datasets <- c("val_10.dmso.vs.cxcr7", 
-                  "val_600.dmso.vs.cxcr7", 
-                  "val_1800.dmso.vs.cxcr7")
-
-all_phosphosite_data <- lapply(val_datasets, function(time_name) {
-  time_pt <- str_extract(time_name, "\\d+")
-  dataset <- dfs_new_raw[[time_name]]
-  
-  dataset %>%
-    as.data.frame() %>%
-    filter(!is.na(name)) %>%
-    mutate(
-      phosphosite_id = paste(name, PSite, sep = "_"),
-      timepoint = time_pt
-    ) %>%
-    select(phosphosite_id, name, PSite, uniprot_id, logFC, PValue, timepoint)
-}) %>% 
-  bind_rows()
-
-# Pivot to wide format
-phospho_wide <- all_phosphosite_data %>%
-  pivot_wider(
-    id_cols = c(phosphosite_id, name, PSite, uniprot_id),
-    names_from = timepoint,
-    values_from = c(logFC, PValue),
-    names_sep = "_"
-  ) %>%
-  mutate(
-    mean_logFC = rowMeans(cbind(logFC_10, logFC_600, logFC_1800), na.rm = TRUE),
-    max_abs_logFC = pmax(abs(logFC_10), abs(logFC_600), abs(logFC_1800), na.rm = TRUE),
-    min_pvalue = pmin(PValue_10, PValue_600, PValue_1800, na.rm = TRUE),
-    n_sig = (PValue_10 < 0.05) + (PValue_600 < 0.05) + (PValue_1800 < 0.05)
+# Aggregate to protein level (for NODE visualization)
+protein_summary <- phospho_wide %>%
+  group_by(name) %>%
+  summarize(
+    n_psites = n(),
+    
+    # Mean logFC per timepoint (for node color)
+    mean_logFC_10 = mean(logFC_10, na.rm = TRUE),
+    mean_logFC_600 = mean(logFC_600, na.rm = TRUE),
+    mean_logFC_1800 = mean(logFC_1800, na.rm = TRUE),
+    
+    # Max absolute change (for node size scaling)
+    max_abs_logFC = max(abs(c(logFC_10, logFC_600, logFC_1800)), na.rm = TRUE),
+    
+    # Significance
+    min_pvalue = min(c(PValue_10, PValue_600, PValue_1800), na.rm = TRUE),
+    n_sig_timepoints = sum(c(PValue_10 < 0.05, PValue_600 < 0.05, PValue_1800 < 0.05), na.rm = TRUE),
+    
+    # Which timepoint has strongest effect?
+    dominant_timepoint = case_when(
+      abs(mean_logFC_10) >= abs(mean_logFC_600) & abs(mean_logFC_10) >= abs(mean_logFC_1800) ~ "10s",
+      abs(mean_logFC_600) >= abs(mean_logFC_10) & abs(mean_logFC_600) >= abs(mean_logFC_1800) ~ "600s",
+      TRUE ~ "1800s"
+    ),
+    
+    # Representative sites (for labels)
+    top_3_sites = paste(head(PSite[order(min_pvalue)], 3), collapse = ";"),
+    
+    .groups = "drop"
   )
 
-# Get genes from pathways
+# Get pathway genes
 pathway_genes <- gene_pathway_map %>%
   filter(pathway_num %in% pathway_summary$pathway_num) %>%
   pull(gene) %>%
   unique()
 
-cat(sprintf("✓ Total genes in top 30 pathways: %d\n", length(pathway_genes)))
+cat(sprintf("✓ Pathway genes: %d\n", length(pathway_genes)))
+cat(sprintf("✓ Proteins with phospho-data: %d\n", nrow(protein_summary)))
 cat(sprintf("✓ Total phosphosites: %d\n\n", nrow(phospho_wide)))
 
 ## ============================================================
-## STEP 2: GET REACTOME INTERACTIONS (BACKBONE)
+## STEP 2: DOWNLOAD REACTOME INTERACTIONS
 ## ============================================================
+options(timeout = 600)
+file.remove("reactome_interactions.txt") 
 
-cat("STEP 2: Downloading Reactome interactions...\n")
+cat("STEP 2: Getting Reactome interactions...\n")
 
-# Get Reactome pathway IDs for your top 30 pathways
-# You need to map pathway names to Reactome IDs
-top30_pathway_ids <- c(
-  "R-HSA-2029481",  # BRAF/RAF1 fusions
-  "R-HSA-1474228",  # Degradation of ECM
-  "R-HSA-1474244",  # ECM organization
-  "R-HSA-165159",   # mTOR signaling
-  "R-HSA-216083",   # Integrin cell surface interactions
-  # ... add all 30 pathway IDs
-)
+# Download once and cache
+if (!file.exists("reactome_human_interactions.rds")) {
+  cat("  Downloading Reactome database...\n")
+  
+  download.file(
+    url = "https://reactome.org/download/current/interactors/reactome.all_species.interactions.tab-delimited.txt",
+    destfile = "reactome_interactions.txt"
+  )
+  
+  reactome_all <- read_tsv(
+    "reactome_interactions.txt",
+    skip = 1,
+    col_names = c("uniprot_A", "uniprot_B", "gene_A", "gene_B",
+                  "interaction_type", "pubmed_ids", "score",
+                  "species_A", "species_B"),
+    show_col_types = FALSE
+  )
+  
+  reactome_human <- reactome_all %>%
+    filter(species_A == "Homo sapiens" & species_B == "Homo sapiens")
+  
+  saveRDS(reactome_human, "reactome_human_interactions.rds")
+  file.remove("reactome_interactions.txt")
+}
 
-# Download Reactome interactions via OmniPath
-reactome_interactions <- import_post_translational_interactions(
-  organisms = 9606,  # Human
-  resources = "Reactome"
-) %>%
-  filter(
-    source_genesymbol %in% pathway_genes | 
-      target_genesymbol %in% pathway_genes
-  ) %>%
+reactome <- readRDS("reactome_human_interactions.rds")
+
+# Filter to pathway genes
+reactome_pathway <- reactome %>%
+  filter(gene_A %in% pathway_genes & gene_B %in% pathway_genes) %>%
   select(
-    source = source_genesymbol,
-    target = target_genesymbol,
-    interaction_type = type,
-    is_directed = is_directed,
-    is_stimulation = is_stimulation,
-    is_inhibition = is_inhibition,
-    sources,
-    references
+    source = gene_A,
+    target = gene_B,
+    interaction_type,
+    pubmed_ids,
+    score
   ) %>%
-  distinct()
+  distinct(source, target, .keep_all = TRUE)
 
-cat(sprintf("✓ Reactome interactions (initial): %d\n", nrow(reactome_interactions)))
-
-# Filter: keep only if at least ONE protein is in your phospho-data
-proteins_with_phospho <- unique(phospho_wide$name)
-
-reactome_filtered <- reactome_interactions %>%
-  filter(
-    source %in% proteins_with_phospho | 
-      target %in% proteins_with_phospho
-  )
-
-cat(sprintf("✓ Reactome interactions (with phospho evidence): %d\n\n", 
-            nrow(reactome_filtered)))
+cat(sprintf("✓ Reactome interactions: %d\n\n", nrow(reactome_pathway)))
 
 ## ============================================================
-## STEP 3: AGGREGATE PHOSPHOSITES PER PROTEIN (NODE LEVEL)
+## STEP 3: CREATE NODES (WITH REACTOME + NON-REACTOME)
 ## ============================================================
 
-cat("STEP 3: Aggregating phosphosites to protein level...\n")
+cat("STEP 3: Creating node table...\n")
 
-# Strategy: Per protein, summarize phosphorylation
-protein_summary <- phospho_wide %>%
-  group_by(name) %>%
-  summarize(
-    n_psites = n(),
-    mean_logFC_10 = mean(logFC_10, na.rm = TRUE),
-    mean_logFC_600 = mean(logFC_600, na.rm = TRUE),
-    mean_logFC_1800 = mean(logFC_1800, na.rm = TRUE),
-    max_abs_logFC_10 = max(abs(logFC_10), na.rm = TRUE),
-    max_abs_logFC_600 = max(abs(logFC_600), na.rm = TRUE),
-    max_abs_logFC_1800 = max(abs(logFC_1800), na.rm = TRUE),
-    min_pvalue = min(min_pvalue, na.rm = TRUE),
-    n_sig_sites = sum(n_sig > 0),
-    # Dominant direction (more up or down sites?)
-    direction = case_when(
-      sum(mean_logFC > 0) > sum(mean_logFC < 0) ~ "up",
-      sum(mean_logFC < 0) > sum(mean_logFC > 0) ~ "down",
-      TRUE ~ "mixed"
-    ),
-    # Peak timepoint (when is max effect?)
-    peak_timepoint = case_when(
-      abs(mean_logFC_10) == pmax(abs(mean_logFC_10), abs(mean_logFC_600), abs(mean_logFC_1800)) ~ "10s",
-      abs(mean_logFC_600) == pmax(abs(mean_logFC_10), abs(mean_logFC_600), abs(mean_logFC_1800)) ~ "600s",
-      abs(mean_logFC_1800) == pmax(abs(mean_logFC_10), abs(mean_logFC_600), abs(mean_logFC_1800)) ~ "1800s",
-      TRUE ~ "unclear"
-    ),
-    # Representative phosphosites (top 3 by significance)
-    top_psites = paste(head(PSite[order(min_pvalue)], 3), collapse = ";"),
-    .groups = "drop"
-  )
+# All nodes from Reactome
+reactome_nodes <- unique(c(reactome_pathway$source, reactome_pathway$target))
 
-cat(sprintf("✓ Proteins with phospho-data: %d\n\n", nrow(protein_summary)))
+# Proteins with phospho-data but NOT in Reactome
+orphan_proteins <- setdiff(protein_summary$name, reactome_nodes)
 
-## ============================================================
-## STEP 4: CREATE NETWORK (NODES + EDGES)
-## ============================================================
+cat(sprintf("  Reactome nodes: %d\n", length(reactome_nodes)))
+cat(sprintf("  Orphan proteins (not in Reactome): %d\n", length(orphan_proteins)))
 
-cat("STEP 4: Building network...\n")
-
-# NODES: All proteins in Reactome interactions
-all_nodes <- unique(c(reactome_filtered$source, reactome_filtered$target))
-
-# Create node table
-nodes <- data.frame(
-  name = all_nodes,
+# Combine
+all_nodes <- data.frame(
+  name = unique(c(reactome_nodes, protein_summary$name)),
   stringsAsFactors = FALSE
 ) %>%
   left_join(protein_summary, by = "name") %>%
   mutate(
-    # If protein not in phospho-data, mark as "no_data"
+    in_reactome = name %in% reactome_nodes,
     has_phospho = !is.na(n_psites),
     n_psites = replace_na(n_psites, 0),
-    mean_logFC_1800 = replace_na(mean_logFC_1800, 0),
     min_pvalue = replace_na(min_pvalue, 1),
-    direction = replace_na(direction, "no_data")
+    mean_logFC_10 = replace_na(mean_logFC_10, 0),
+    mean_logFC_600 = replace_na(mean_logFC_600, 0),
+    mean_logFC_1800 = replace_na(mean_logFC_1800, 0)
   )
 
-# EDGES: Reactome interactions
-edges <- reactome_filtered %>%
-  select(from = source, to = target, 
-         interaction_type, is_stimulation, is_inhibition, 
-         references)
-
-cat(sprintf("✓ Nodes: %d (%d with phospho-data)\n", 
-            nrow(nodes), sum(nodes$has_phospho)))
-cat(sprintf("✓ Edges: %d\n\n", nrow(edges)))
+cat(sprintf("✓ Total nodes: %d\n", nrow(all_nodes)))
+cat(sprintf("  - In Reactome: %d\n", sum(all_nodes$in_reactome)))
+cat(sprintf("  - With phospho-data: %d\n", sum(all_nodes$has_phospho)))
+cat(sprintf("  - Both: %d\n\n", sum(all_nodes$in_reactome & all_nodes$has_phospho)))
 
 ## ============================================================
-## STEP 5: CALCULATE "TRAFFIC" (EDGE IMPORTANCE)
+## STEP 4: BUILD NETWORK WITH TRAFFIC SCORES
 ## ============================================================
 
-cat("STEP 5: Calculating edge traffic/importance...\n")
+cat("STEP 4: Calculating edge importance...\n")
 
-# Build initial graph
-g <- graph_from_data_frame(edges, directed = TRUE, vertices = nodes)
+# Build graph
+g <- graph_from_data_frame(reactome_pathway, directed = TRUE, vertices = all_nodes)
 
-# TRAFFIC METRIC 1: Both source AND target phosphorylated + significant
-edges_with_traffic <- edges %>%
-  left_join(protein_summary %>% select(name, min_pvalue_source = min_pvalue), 
-            by = c("from" = "name")) %>%
-  left_join(protein_summary %>% select(name, min_pvalue_target = min_pvalue), 
-            by = c("to" = "name")) %>%
+# Calculate betweenness (centrality)
+betweenness_scores <- betweenness(g, directed = TRUE)
+
+# Add traffic scores to edges
+edges_scored <- reactome_pathway %>%
+  left_join(protein_summary %>% select(name, pval_source = min_pvalue),
+            by = c("source" = "name")) %>%
+  left_join(protein_summary %>% select(name, pval_target = min_pvalue),
+            by = c("target" = "name")) %>%
   mutate(
-    # Both significant?
-    both_significant = (min_pvalue_source < 0.05) & (min_pvalue_target < 0.05),
-    # Score based on significance
-    traffic_score = -log10(min_pvalue_source * min_pvalue_target + 1e-10),
-    # Bonus if activation/inhibition is clear
-    traffic_bonus = case_when(
-      is_stimulation == 1 ~ 1.5,
-      is_inhibition == 1 ~ 1.5,
-      TRUE ~ 1.0
-    ),
-    traffic_total = traffic_score * traffic_bonus
+    # Both proteins significant?
+    both_sig = (pval_source < 0.05 & !is.na(pval_source)) & 
+      (pval_target < 0.05 & !is.na(pval_target)),
+    
+    # Significance score
+    sig_score = -log10((pval_source + 0.001) * (pval_target + 0.001)),
+    
+    # Centrality score
+    betweenness_source = betweenness_scores[source],
+    betweenness_target = betweenness_scores[target],
+    centrality_score = (betweenness_source + betweenness_target) / 2,
+    
+    # Normalize
+    sig_norm = scale(sig_score)[,1],
+    cent_norm = scale(centrality_score)[,1],
+    
+    # Combined traffic
+    traffic = 0.7 * sig_norm + 0.3 * cent_norm
   ) %>%
-  arrange(desc(traffic_total))
+  arrange(desc(traffic))
 
-# TRAFFIC METRIC 2: Betweenness centrality (connectivity)
-betweenness <- betweenness(g, directed = TRUE)
-edges_with_betweenness <- edges_with_traffic %>%
-  mutate(
-    betweenness_from = betweenness[from],
-    betweenness_to = betweenness[to],
-    centrality_score = (betweenness_from + betweenness_to) / 2
-  )
-
-# COMBINED TRAFFIC SCORE
-edges_final <- edges_with_betweenness %>%
-  mutate(
-    # Normalize both scores
-    traffic_norm = scale(traffic_total)[,1],
-    centrality_norm = scale(centrality_score)[,1],
-    # Combined score
-    combined_traffic = 0.7 * traffic_norm + 0.3 * centrality_norm,
-    # Rank
-    traffic_rank = rank(-combined_traffic)
-  )
-
-cat(sprintf("✓ Top 10 highest-traffic edges:\n"))
-edges_final %>%
-  select(from, to, interaction_type, traffic_total, centrality_score, combined_traffic) %>%
+cat("✓ Top 10 edges:\n")
+edges_scored %>%
+  select(source, target, both_sig, sig_score, traffic) %>%
   head(10) %>%
   print()
 
 cat("\n")
 
 ## ============================================================
-## STEP 6: IDENTIFY CORE NETWORK (HIGHEST TRAFFIC)
+## STEP 5: EXTRACT CORE NETWORK
 ## ============================================================
 
-cat("STEP 6: Extracting core high-traffic network...\n")
+cat("STEP 5: Extracting core network (top 30%)...\n")
 
-# Strategy: Keep top X% of edges by traffic
-traffic_percentile <- 0.25  # Top 25% of edges
+traffic_threshold <- quantile(edges_scored$traffic, probs = 0.70, na.rm = TRUE)
 
-traffic_threshold <- quantile(edges_final$combined_traffic, 
-                              probs = 1 - traffic_percentile, 
-                              na.rm = TRUE)
+core_edges <- edges_scored %>%
+  filter(traffic >= traffic_threshold)
 
-core_edges <- edges_final %>%
-  filter(combined_traffic >= traffic_threshold)
+core_node_names <- unique(c(core_edges$source, core_edges$target))
+core_nodes <- all_nodes %>%
+  filter(name %in% core_node_names)
 
-cat(sprintf("✓ Core edges (top %.0f%%): %d\n", traffic_percentile * 100, nrow(core_edges)))
-
-# Keep only nodes that are in core edges
-core_nodes_names <- unique(c(core_edges$from, core_edges$to))
-core_nodes <- nodes %>%
-  filter(name %in% core_nodes_names)
-
+cat(sprintf("✓ Core edges: %d\n", nrow(core_edges)))
 cat(sprintf("✓ Core nodes: %d\n\n", nrow(core_nodes)))
 
-# Build core graph
 g_core <- graph_from_data_frame(
-  core_edges %>% select(from, to, interaction_type, combined_traffic),
+  core_edges %>% select(from = source, to = target, traffic, interaction_type),
   directed = TRUE,
   vertices = core_nodes
 )
 
 ## ============================================================
-## STEP 7: VISUALIZATION - TEMPORAL SNAPSHOTS
+## STEP 6: VISUALIZATION - 3 TEMPORAL SNAPSHOTS
 ## ============================================================
 
-cat("STEP 7: Creating temporal network visualizations...\n")
+cat("STEP 6: Creating temporal network plots...\n")
 
-# Function to create network plot for one timepoint
-plot_temporal_network <- function(graph, nodes_df, timepoint_col, title) {
+# Plot function
+plot_network <- function(graph, nodes_df, logfc_col, timepoint_name) {
   
   tbl <- as_tbl_graph(graph) %>%
     activate(nodes) %>%
-    left_join(nodes_df %>% select(name, !!sym(timepoint_col), min_pvalue, n_psites), 
+    left_join(nodes_df %>% select(name, !!sym(logfc_col), min_pvalue, n_psites, in_reactome),
               by = "name")
   
   ggraph(tbl, layout = "stress") +
     # Edges
     geom_edge_link(
-      aes(edge_alpha = combined_traffic),
+      aes(alpha = traffic),
       arrow = arrow(length = unit(2, 'mm')),
       end_cap = circle(3, 'mm'),
-      color = "grey50"
+      color = "grey50",
+      width = 0.5
     ) +
     # Nodes
     geom_node_point(
       aes(size = n_psites,
-          fill = !!sym(timepoint_col),
-          color = ifelse(min_pvalue < 0.05, "black", "grey70")),
-      shape = 21,
-      stroke = 1.5
+          fill = !!sym(logfc_col),
+          shape = ifelse(in_reactome, 21, 24),  # circle vs triangle
+          color = ifelse(min_pvalue < 0.05, "black", "grey80")),
+      stroke = 1.2
     ) +
-    # Labels (only for top nodes)
+    # Labels (only for significant multi-site proteins)
     geom_node_text(
-      aes(label = ifelse(n_psites >= 3, name, "")),
+      aes(label = ifelse(n_psites >= 4 & min_pvalue < 0.05, name, "")),
       repel = TRUE,
-      size = 3,
-      fontface = "bold"
+      size = 2.5,
+      fontface = "bold",
+      max.overlaps = 20
     ) +
-    # Colors
     scale_fill_gradient2(
-      low = "#0571B0", mid = "white", high = "#CA0020",
+      low = "#0571B0", 
+      mid = "white", 
+      high = "#CA0020",
       midpoint = 0,
-      name = "mean logFC",
-      limits = c(-1.5, 1.5)
+      limits = c(-1.5, 1.5),
+      name = "mean logFC"
     ) +
     scale_size_continuous(
-      range = c(2, 12),
-      name = "# phosphosites"
+      range = c(1, 10),
+      name = "# psites"
     ) +
+    scale_shape_identity() +
+    scale_color_identity() +
     scale_edge_alpha_continuous(
-      range = c(0.2, 1),
-      name = "traffic"
+      range = c(0.1, 0.8),
+      guide = "none"
     ) +
     theme_graph() +
-    theme(legend.position = "right") +
-    labs(title = title,
-         subtitle = sprintf("%d nodes, %d edges", 
-                            vcount(graph), ecount(graph)))
+    theme(
+      legend.position = "right",
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 10)
+    ) +
+    labs(
+      title = sprintf("ACKR3/CXCR7 Network: %s", timepoint_name),
+      subtitle = sprintf("%d nodes (%d with phospho) | %d edges | Circle=in Reactome, Triangle=orphan",
+                         vcount(graph),
+                         sum(V(graph)$has_phospho, na.rm = TRUE),
+                         ecount(graph))
+    )
 }
 
-# Create plots
-p1 <- plot_temporal_network(g_core, core_nodes, "mean_logFC_10", 
-                            "ACKR3/CXCR7 Network: 10 seconds")
-p2 <- plot_temporal_network(g_core, core_nodes, "mean_logFC_600", 
-                            "ACKR3/CXCR7 Network: 600 seconds")
-p3 <- plot_temporal_network(g_core, core_nodes, "mean_logFC_1800", 
-                            "ACKR3/CXCR7 Network: 1800 seconds")
+p1 <- plot_network(g_core, core_nodes, "mean_logFC_10", "10 seconds")
+p2 <- plot_network(g_core, core_nodes, "mean_logFC_600", "600 seconds")
+p3 <- plot_network(g_core, core_nodes, "mean_logFC_1800", "1800 seconds")
 
-# Save
-library(patchwork)
-pdf("ACKR3_network_temporal.pdf", width = 18, height = 6)
+pdf("ACKR3_network_temporal.pdf", width = 22, height = 7)
 p1 + p2 + p3
 dev.off()
 
 cat("✓ Saved: ACKR3_network_temporal.pdf\n\n")
 
 ## ============================================================
-## STEP 8: IDENTIFY MISSING LINKS
+## STEP 7: SOLVE MULTI-PSITE VISUALIZATION
 ## ============================================================
 
-cat("STEP 8: Identifying missing links...\n")
+cat("STEP 7: Creating phosphosite-level detail plots...\n")
 
-# STRATEGY: Find proteins that are:
-# 1. Significantly phosphorylated
-# 2. NOT connected in Reactome network
+# Strategy: For each hub protein, show ALL phosphosites as small multiples
 
-# All proteins with significant phosphorylation
-sig_proteins <- protein_summary %>%
-  filter(min_pvalue < 0.05) %>%
+# Select top hub proteins (≥4 psites, significant)
+hub_proteins <- core_nodes %>%
+  filter(n_psites >= 4, min_pvalue < 0.05) %>%
+  arrange(desc(n_psites)) %>%
+  head(20) %>%  # Top 20 hubs
   pull(name)
 
-# Which are NOT in core network?
-missing_proteins <- sig_proteins[!sig_proteins %in% core_nodes_names]
-
-cat(sprintf("✓ Proteins significantly phosphorylated: %d\n", length(sig_proteins)))
-cat(sprintf("✓ Missing from core network: %d\n", length(missing_proteins)))
-
-if (length(missing_proteins) > 0) {
-  cat("\nTop 20 missing proteins:\n")
-  protein_summary %>%
-    filter(name %in% missing_proteins) %>%
-    arrange(min_pvalue) %>%
-    select(name, n_psites, min_pvalue, mean_logFC_1800, top_psites) %>%
-    head(20) %>%
-    print()
-}
-
-cat("\n")
-
-## ============================================================
-## STEP 9: SOLVE MULTIPLE PHOSPHOSITES PER NODE
-## ============================================================
-
-cat("STEP 9: Creating detailed node-level visualization...\n")
-
-# Create a "bubble plot" for key nodes showing all phosphosites
-
-key_nodes <- core_nodes %>%
-  filter(n_psites >= 3, min_pvalue < 0.05) %>%
-  pull(name)
-
-phosphosite_details <- phospho_wide %>%
-  filter(name %in% key_nodes) %>%
-  select(name, PSite, phosphosite_id, 
+# Get all psites for these hubs
+hub_psites <- phospho_wide %>%
+  filter(name %in% hub_proteins) %>%
+  select(name, PSite, phosphosite_id,
          logFC_10, logFC_600, logFC_1800,
          PValue_10, PValue_600, PValue_1800) %>%
   pivot_longer(
-    cols = starts_with("logFC"),
+    cols = c(logFC_10, logFC_600, logFC_1800),
     names_to = "timepoint",
     values_to = "logFC",
     names_prefix = "logFC_"
@@ -418,55 +332,117 @@ phosphosite_details <- phospho_wide %>%
       timepoint == "1800" ~ PValue_1800
     ),
     significant = pvalue < 0.05,
-    timepoint = factor(timepoint, levels = c("10", "600", "1800"))
+    timepoint = factor(timepoint, levels = c("10", "600", "1800"),
+                       labels = c("10s", "600s", "1800s"))
   )
 
-# Plot: Heatmap of phosphosites for top nodes
-library(ggplot2)
-
-p_detail <- ggplot(phosphosite_details %>% filter(name %in% head(key_nodes, 10)),
+# Plot: Heatmap grid
+p_psites <- ggplot(hub_psites, 
                    aes(x = timepoint, y = phosphosite_id, fill = logFC)) +
-  geom_tile(color = "white", size = 0.5) +
-  geom_point(aes(size = ifelse(significant, 3, NA)), 
-             shape = 8, color = "black") +
-  facet_wrap(~ name, scales = "free_y", ncol = 2) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  geom_point(
+    data = hub_psites %>% filter(significant),
+    aes(size = 3),
+    shape = 8,
+    color = "black"
+  ) +
+  facet_wrap(~ name, scales = "free_y", ncol = 4) +
   scale_fill_gradient2(
-    low = "#0571B0", mid = "white", high = "#CA0020",
+    low = "#0571B0",
+    mid = "white",
+    high = "#CA0020",
     midpoint = 0,
     name = "logFC"
   ) +
   scale_size_identity() +
   theme_minimal() +
   theme(
-    axis.text.y = element_text(size = 6),
-    axis.text.x = element_text(size = 10),
-    strip.text = element_text(face = "bold", size = 11)
+    axis.text.y = element_text(size = 5),
+    axis.text.x = element_text(size = 8, angle = 0),
+    strip.text = element_text(face = "bold", size = 9),
+    panel.spacing = unit(0.5, "lines")
   ) +
   labs(
-    title = "Phosphosite-level detail for key hub proteins",
-    subtitle = "Star (*) indicates p < 0.05",
-    x = "Time (seconds)",
+    title = "Phosphosite-level dynamics for hub proteins",
+    subtitle = "Star (*) = p < 0.05 | Each row = one phosphosite",
+    x = "Time",
     y = "Phosphosite"
   )
 
-ggsave("ACKR3_phosphosite_details.pdf", p_detail, width = 12, height = 16)
-cat("✓ Saved: ACKR3_phosphosite_details.pdf\n\n")
+ggsave("ACKR3_phosphosite_heatmap.pdf", p_psites, 
+       width = 16, height = 20, limitsize = FALSE)
+
+cat("✓ Saved: ACKR3_phosphosite_heatmap.pdf\n\n")
 
 ## ============================================================
-## STEP 10: EXPORT NETWORK WITH FULL ANNOTATIONS
+## STEP 8: ALTERNATIVE - SUMMARY HEATMAP (COLLAPSED)
 ## ============================================================
 
-cat("STEP 10: Exporting annotated network...\n")
+cat("STEP 8: Creating summary heatmap (protein-level)...\n")
 
-# Export node table with all phosphosite info
+# Matrix: Proteins × Timepoints
+protein_matrix <- protein_summary %>%
+  filter(name %in% hub_proteins) %>%
+  select(name, mean_logFC_10, mean_logFC_600, mean_logFC_1800) %>%
+  column_to_rownames("name") %>%
+  as.matrix()
+
+colnames(protein_matrix) <- c("10s", "600s", "1800s")
+
+# Significance matrix
+protein_sig <- protein_summary %>%
+  filter(name %in% hub_proteins) %>%
+  left_join(
+    phospho_wide %>%
+      group_by(name) %>%
+      summarize(
+        sig_10 = sum(PValue_10 < 0.05, na.rm = TRUE),
+        sig_600 = sum(PValue_600 < 0.05, na.rm = TRUE),
+        sig_1800 = sum(PValue_1800 < 0.05, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = "name"
+  ) %>%
+  select(name, sig_10, sig_600, sig_1800) %>%
+  column_to_rownames("name") %>%
+  as.matrix()
+
+# Create annotation
+library(pheatmap)
+
+pdf("ACKR3_protein_summary_heatmap.pdf", width = 6, height = 10)
+pheatmap(
+  protein_matrix,
+  cluster_cols = FALSE,
+  cluster_rows = TRUE,
+  display_numbers = protein_sig,
+  number_color = "black",
+  fontsize_number = 8,
+  fontsize_row = 8,
+  cellwidth = 40,
+  cellheight = 15,
+  color = colorRampPalette(c("#0571B0", "#F7F7F7", "#CA0020"))(100),
+  main = "Hub proteins: Mean logFC (numbers = # sig psites)",
+  border_color = "grey60"
+)
+dev.off()
+
+cat("✓ Saved: ACKR3_protein_summary_heatmap.pdf\n\n")
+
+## ============================================================
+## STEP 9: EXPORT DATA
+## ============================================================
+
+cat("STEP 9: Exporting network data...\n")
+
+# Nodes with all psite info
 nodes_export <- core_nodes %>%
   left_join(
     phospho_wide %>%
       group_by(name) %>%
       summarize(
         all_psites = paste(PSite, collapse = ";"),
-        all_psites_logFC_1800 = paste(round(logFC_1800, 2), collapse = ";"),
-        all_psites_pvalue = paste(format(PValue_1800, scientific = TRUE, digits = 2), collapse = ";"),
+        all_psites_ids = paste(phosphosite_id, collapse = ";"),
         .groups = "drop"
       ),
     by = "name"
@@ -474,62 +450,44 @@ nodes_export <- core_nodes %>%
 
 write_csv(nodes_export, "ACKR3_network_nodes.csv")
 
-# Export edge table with traffic scores
-edges_export <- core_edges %>%
-  select(from, to, interaction_type, 
-         is_stimulation, is_inhibition,
-         traffic_score, centrality_score, combined_traffic,
-         references)
+# Edges
+write_csv(core_edges, "ACKR3_network_edges.csv")
 
-write_csv(edges_export, "ACKR3_network_edges.csv")
+# Orphan proteins (not in Reactome but significant)
+orphan_export <- all_nodes %>%
+  filter(!in_reactome & has_phospho & min_pvalue < 0.05) %>%
+  arrange(min_pvalue)
+
+write_csv(orphan_export, "ACKR3_orphan_proteins.csv")
 
 cat("✓ Saved: ACKR3_network_nodes.csv\n")
-cat("✓ Saved: ACKR3_network_edges.csv\n\n")
-
-## ============================================================
-## STEP 11: CREATE SIMPLIFIED SUMMARY NETWORK
-## ============================================================
-
-cat("STEP 11: Creating simplified summary network...\n")
-
-# Super-condensed: Only show proteins with ≥5 phosphosites
-super_core_nodes <- core_nodes %>%
-  filter(n_psites >= 5)
-
-super_core_edges <- core_edges %>%
-  filter(from %in% super_core_nodes$name & to %in% super_core_nodes$name)
-
-g_super <- graph_from_data_frame(
-  super_core_edges,
-  directed = TRUE,
-  vertices = super_core_nodes
-)
-
-p_super <- plot_temporal_network(
-  g_super, super_core_nodes, "mean_logFC_1800",
-  "ACKR3/CXCR7 Core Network (≥5 phosphosites per protein)"
-)
-
-ggsave("ACKR3_network_CORE.pdf", p_super, width = 12, height = 10)
-cat("✓ Saved: ACKR3_network_CORE.pdf\n\n")
+cat("✓ Saved: ACKR3_network_edges.csv\n")
+cat("✓ Saved: ACKR3_orphan_proteins.csv\n\n")
 
 ## ============================================================
 ## SUMMARY
 ## ============================================================
 
 cat(strrep("=", 80), "\n")
-cat("NETWORK RECONSTRUCTION COMPLETE\n")
+cat("REACTOME NETWORK RECONSTRUCTION COMPLETE\n")
 cat(strrep("=", 80), "\n\n")
 cat(sprintf("Total phosphosites: %d\n", nrow(phospho_wide)))
-cat(sprintf("Total proteins with phospho-data: %d\n", nrow(protein_summary)))
-cat(sprintf("Reactome interactions (full): %d\n", nrow(reactome_filtered)))
-cat(sprintf("High-traffic edges: %d\n", nrow(core_edges)))
+cat(sprintf("Proteins with phospho-data: %d\n", nrow(protein_summary)))
+cat(sprintf("Reactome interactions: %d\n", nrow(reactome_pathway)))
 cat(sprintf("Core network nodes: %d\n", nrow(core_nodes)))
-cat(sprintf("Missing proteins (significant but not connected): %d\n", 
-            length(missing_proteins)))
-cat("\nOutput files:\n")
-cat("  - ACKR3_network_temporal.pdf (3 timepoints)\n")
-cat("  - ACKR3_network_CORE.pdf (simplified)\n")
-cat("  - ACKR3_phosphosite_details.pdf (multi-site nodes)\n")
-cat("  - ACKR3_network_nodes.csv (node annotations)\n")
-cat("  - ACKR3_network_edges.csv (edge annotations)\n\n")
+cat(sprintf("Core network edges: %d\n", nrow(core_edges)))
+cat(sprintf("Orphan proteins (sig but not in Reactome): %d\n", nrow(orphan_export)))
+cat("\nOutputs:\n")
+cat("  1. ACKR3_network_temporal.pdf - 3 timepoint views\n")
+cat("  2. ACKR3_phosphosite_heatmap.pdf - All psites for hub proteins\n")
+cat("  3. ACKR3_protein_summary_heatmap.pdf - Collapsed protein-level view\n")
+cat("  4. ACKR3_network_nodes.csv\n")
+cat("  5. ACKR3_network_edges.csv\n")
+cat("  6. ACKR3_orphan_proteins.csv\n\n")
+
+cat("Key features:\n")
+cat("  ✓ Reactome-only interactions (no STRING)\n")
+cat("  ✓ Multiple psites per protein handled via aggregation\n")
+cat("  ✓ Multiple timepoints shown in separate panels\n")
+cat("  ✓ Orphan proteins identified (sig but not in Reactome)\n")
+cat("  ✓ Hub proteins get detailed psite-level heatmap\n\n")
