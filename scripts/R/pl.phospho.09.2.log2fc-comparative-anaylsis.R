@@ -1118,3 +1118,262 @@ ggsave("analysis/PCA/FigS5_CD_logFC_overlap_v2.png",
 
 cat("\n✓ FigS5_CD_logFC_overlap_v2.png saved\n")
 
+
+
+
+###############################################################
+# IDENTIFY the actual shared phosphosites
+###############################################################
+
+# Using adj.P.Val from original data
+for (tp in c("10", "600", "1800")) {
+  
+  init_df <- old_tables_raw[[match(paste0("init_", tp, ".cxcr7.vs.0s"),
+                                   names(old_tables_harmonized))]]
+  val_df  <- dfs_new[[paste0("val_", tp, ".cxcr7.vs.0s")]]
+  
+  i_sig <- get_sig_adjp(init_df)
+  v_sig <- get_sig_adjp(val_df)
+  
+  shared_up   <- intersect(i_sig$up, v_sig$up)
+  shared_down <- intersect(i_sig$down, v_sig$down)
+  
+  # Also check: discordant (sig in both but opposite direction)
+  discordant_1 <- intersect(i_sig$up, v_sig$down)   # Init UP, Val DOWN
+  discordant_2 <- intersect(i_sig$down, v_sig$up)    # Init DOWN, Val UP
+  
+  cat(sprintf("\n=== %ss ===\n", tp))
+  cat(sprintf("  Concordant UP:   %d\n", length(shared_up)))
+  cat(sprintf("  Concordant DOWN: %d\n", length(shared_down)))
+  cat(sprintf("  Discordant:      %d (Init UP/Val DOWN: %d, Init DOWN/Val UP: %d)\n",
+              length(discordant_1) + length(discordant_2),
+              length(discordant_1), length(discordant_2)))
+  
+  if (length(shared_up) > 0) {
+    cat("\n  Shared UP phosphosites:\n")
+    for (s in sort(shared_up)) cat("    ", s, "\n")
+  }
+  if (length(shared_down) > 0) {
+    cat("\n  Shared DOWN phosphosites:\n")
+    for (s in sort(shared_down)) cat("    ", s, "\n")
+  }
+}
+
+
+
+
+
+
+
+
+###############################################################
+# MAP shared phosphosites to gene symbols
+###############################################################
+
+# Build lookup from all_inputs (has both uniprot_id and name)
+lookup <- unique(rbind(
+  all_inputs[[1]][, c("uniprot_id", "name", "PSite")],
+  old_tables_harmonized[[1]][, c("uniprot_id", "name", "PSite")]
+))
+
+# Function to convert uniprot@PSite to GeneName_PSite
+id_to_gene <- function(phospho_ids) {
+  parts <- strsplit(phospho_ids, "@")
+  uniprot <- sapply(parts, `[`, 1)
+  psite   <- sapply(parts, `[`, 2)
+  
+  gene <- lookup$name[match(uniprot, lookup$uniprot_id)]
+  paste0(gene, "_", psite)
+}
+
+# Reprint with gene symbols
+for (tp in c("10", "600", "1800")) {
+  
+  init_df <- old_tables_raw[[match(paste0("init_", tp, ".cxcr7.vs.0s"),
+                                   names(old_tables_harmonized))]]
+  val_df  <- dfs_new[[paste0("val_", tp, ".cxcr7.vs.0s")]]
+  
+  i_sig <- get_sig_adjp(init_df)
+  v_sig <- get_sig_adjp(val_df)
+  
+  shared_up   <- sort(intersect(i_sig$up, v_sig$up))
+  shared_down <- sort(intersect(i_sig$down, v_sig$down))
+  discordant  <- c(intersect(i_sig$up, v_sig$down), intersect(i_sig$down, v_sig$up))
+  
+  cat(sprintf("\n=== %ss ===\n", tp))
+  cat(sprintf("  Concordant UP: %d | Concordant DOWN: %d | Discordant: %d\n",
+              length(shared_up), length(shared_down), length(discordant)))
+  
+  if (length(shared_up) > 0) {
+    cat("\n  Shared UP:\n")
+    cat("    ", paste(id_to_gene(shared_up), collapse = "\n     "), "\n")
+  }
+  if (length(shared_down) > 0) {
+    cat("\n  Shared DOWN:\n")
+    cat("    ", paste(id_to_gene(shared_down), collapse = "\n     "), "\n")
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+###############################################################
+# COMPREHENSIVE DIFFERENTIAL EXPRESSION COUNTS
+# Init vs Val — CXCR7 vs 0s — with overlap
+# Using adj.P.Val from original data
+###############################################################
+
+timepoints <- c("10", "600", "1800")
+
+###############################################################
+# 1) adj.P.Val < 0.05 only
+###############################################################
+
+cat("\n========================================================\n")
+cat("  adj.P.Val < 0.05 (no FC cutoff)\n")
+cat("========================================================\n\n")
+
+cat("--- Per experiment ---\n")
+cat(sprintf("%-12s | %6s | %6s | %6s | %6s\n", 
+            "Dataset", "UP", "DOWN", "Total", "% of all"))
+
+for (tp in timepoints) {
+  # Init
+  nm <- paste0("init_", tp, ".cxcr7.vs.0s")
+  df <- old_tables_raw[[match(nm, names(old_tables_harmonized))]]
+  i_up   <- sum(df$adj.P.Val < 0.05 & df$logFC > 0, na.rm = TRUE)
+  i_down <- sum(df$adj.P.Val < 0.05 & df$logFC < 0, na.rm = TRUE)
+  cat(sprintf("Init %5ss   | %6d | %6d | %6d | %5.1f%%\n",
+              tp, i_up, i_down, i_up + i_down, 100*(i_up+i_down)/nrow(df)))
+}
+cat("\n")
+for (tp in timepoints) {
+  nm <- paste0("val_", tp, ".cxcr7.vs.0s")
+  df <- dfs_new[[nm]]
+  v_up   <- sum(df$adj.P.Val < 0.05 & df$logFC > 0, na.rm = TRUE)
+  v_down <- sum(df$adj.P.Val < 0.05 & df$logFC < 0, na.rm = TRUE)
+  cat(sprintf("Val  %5ss   | %6d | %6d | %6d | %5.1f%%\n",
+              tp, v_up, v_down, v_up + v_down, 100*(v_up+v_down)/nrow(df)))
+}
+
+cat("\n--- Overlap (adj.P.Val < 0.05) ---\n")
+cat(sprintf("%-8s | %9s | %11s | %11s | %9s | %s\n",
+            "TP", "Conc. UP", "Conc. DOWN", "Total Conc.", "Discord.", "Concordance%"))
+
+for (tp in timepoints) {
+  init_df <- old_tables_raw[[match(paste0("init_", tp, ".cxcr7.vs.0s"),
+                                   names(old_tables_harmonized))]]
+  val_df  <- dfs_new[[paste0("val_", tp, ".cxcr7.vs.0s")]]
+  
+  i_sig <- get_sig_adjp(init_df)
+  v_sig <- get_sig_adjp(val_df)
+  
+  conc_up   <- length(intersect(i_sig$up, v_sig$up))
+  conc_down <- length(intersect(i_sig$down, v_sig$down))
+  disc_1    <- length(intersect(i_sig$up, v_sig$down))
+  disc_2    <- length(intersect(i_sig$down, v_sig$up))
+  total     <- conc_up + conc_down + disc_1 + disc_2
+  conc_pct  <- if (total > 0) 100 * (conc_up + conc_down) / total else 0
+  
+  cat(sprintf("%5ss    | %9d | %11d | %11d | %9d | %5.1f%%\n",
+              tp, conc_up, conc_down, conc_up + conc_down,
+              disc_1 + disc_2, conc_pct))
+}
+
+
+###############################################################
+# 2) adj.P.Val < 0.05 AND |logFC| > 0.5
+###############################################################
+
+cat("\n\n========================================================\n")
+cat("  adj.P.Val < 0.05 AND |logFC| > 0.5\n")
+cat("========================================================\n\n")
+
+cat("--- Per experiment ---\n")
+cat(sprintf("%-12s | %6s | %6s | %6s | %6s\n",
+            "Dataset", "UP", "DOWN", "Total", "% of all"))
+
+for (tp in timepoints) {
+  nm <- paste0("init_", tp, ".cxcr7.vs.0s")
+  df <- old_tables_raw[[match(nm, names(old_tables_harmonized))]]
+  i_up   <- sum(df$adj.P.Val < 0.05 & df$logFC > 0.5, na.rm = TRUE)
+  i_down <- sum(df$adj.P.Val < 0.05 & df$logFC < -0.5, na.rm = TRUE)
+  cat(sprintf("Init %5ss   | %6d | %6d | %6d | %5.1f%%\n",
+              tp, i_up, i_down, i_up + i_down, 100*(i_up+i_down)/nrow(df)))
+}
+cat("\n")
+for (tp in timepoints) {
+  nm <- paste0("val_", tp, ".cxcr7.vs.0s")
+  df <- dfs_new[[nm]]
+  v_up   <- sum(df$adj.P.Val < 0.05 & df$logFC > 0.5, na.rm = TRUE)
+  v_down <- sum(df$adj.P.Val < 0.05 & df$logFC < -0.5, na.rm = TRUE)
+  cat(sprintf("Val  %5ss   | %6d | %6d | %6d | %5.1f%%\n",
+              tp, v_up, v_down, v_up + v_down, 100*(v_up+v_down)/nrow(df)))
+}
+
+cat("\n--- Overlap (adj.P.Val < 0.05 & |FC| > 0.5) ---\n")
+cat(sprintf("%-8s | %9s | %11s | %11s | %9s | %s\n",
+            "TP", "Conc. UP", "Conc. DOWN", "Total Conc.", "Discord.", "Concordance%"))
+
+for (tp in timepoints) {
+  init_df <- old_tables_raw[[match(paste0("init_", tp, ".cxcr7.vs.0s"),
+                                   names(old_tables_harmonized))]]
+  val_df  <- dfs_new[[paste0("val_", tp, ".cxcr7.vs.0s")]]
+  
+  i_sig <- get_sig_adjp(init_df, fc_cutoff = 0.5)
+  v_sig <- get_sig_adjp(val_df, fc_cutoff = 0.5)
+  
+  conc_up   <- length(intersect(i_sig$up, v_sig$up))
+  conc_down <- length(intersect(i_sig$down, v_sig$down))
+  disc_1    <- length(intersect(i_sig$up, v_sig$down))
+  disc_2    <- length(intersect(i_sig$down, v_sig$up))
+  total     <- conc_up + conc_down + disc_1 + disc_2
+  conc_pct  <- if (total > 0) 100 * (conc_up + conc_down) / total else 0
+  
+  cat(sprintf("%5ss    | %9d | %11d | %11d | %9d | %5.1f%%\n",
+              tp, conc_up, conc_down, conc_up + conc_down,
+              disc_1 + disc_2, conc_pct))
+}
+
+
+###############################################################
+# 3) LIST SHARED SITES with gene names (both cutoffs)
+###############################################################
+
+cat("\n\n========================================================\n")
+cat("  Shared phosphosites with gene names\n")
+cat("  adj.P.Val < 0.05 & |logFC| > 0.5\n")
+cat("========================================================\n")
+
+for (tp in timepoints) {
+  init_df <- old_tables_raw[[match(paste0("init_", tp, ".cxcr7.vs.0s"),
+                                   names(old_tables_harmonized))]]
+  val_df  <- dfs_new[[paste0("val_", tp, ".cxcr7.vs.0s")]]
+  
+  i_sig <- get_sig_adjp(init_df, fc_cutoff = 0.5)
+  v_sig <- get_sig_adjp(val_df, fc_cutoff = 0.5)
+  
+  conc_up   <- sort(intersect(i_sig$up, v_sig$up))
+  conc_down <- sort(intersect(i_sig$down, v_sig$down))
+  disc      <- c(intersect(i_sig$up, v_sig$down), intersect(i_sig$down, v_sig$up))
+  
+  cat(sprintf("\n=== %ss (adj.P.Val<0.05 & |FC|>0.5) ===\n", tp))
+  cat(sprintf("  Concordant UP: %d | DOWN: %d | Discordant: %d\n",
+              length(conc_up), length(conc_down), length(disc)))
+  
+  if (length(conc_up) > 0)
+    cat("  UP:  ", paste(id_to_gene(conc_up), collapse = ", "), "\n")
+  if (length(conc_down) > 0)
+    cat("  DOWN:", paste(id_to_gene(conc_down), collapse = ", "), "\n")
+  if (length(disc) > 0)
+    cat("  DISC:", paste(id_to_gene(disc), collapse = ", "), "\n")
+}
+
+

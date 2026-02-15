@@ -1867,16 +1867,6 @@ cat("\n")
 
 
 
-# Only keep colors that actually exist in the data
-annot_colors <- list(
-  Selected = all_selection_colors[names(all_selection_colors) %in% unique_selections]
-)
-
-cat("Annotation colors defined for:\n")
-print(names(annot_colors$Selected))
-cat("\n")
-
-
 
 ## ------------------------------------------------------------
 ## F) Master heatmap - WITHOUT ANNOTATION (cleaner)
